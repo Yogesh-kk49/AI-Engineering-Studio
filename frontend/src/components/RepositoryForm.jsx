@@ -16,6 +16,7 @@ const STAGE_LABELS = {
 export default function RepositoryForm({ onAnalysisStarted, toast, findExistingByUrl, onAlreadyScanned }) {
   const [repoUrl, setRepoUrl]   = useState('');
   const [loading, setLoading]   = useState(false);
+  const [deepScan, setDeepScan] = useState(false); // scan every file, no sampling cap — slower, exhaustive
   const [stage, setStage]       = useState('');   // current backend status label
   const [percent, setPercent]   = useState(0);     // progress_percent for the fill bar
   const pollRef   = useRef(null);
@@ -27,29 +28,46 @@ export default function RepositoryForm({ onAnalysisStarted, toast, findExistingB
 
   // While the (blocking) POST /api/analyze/ request is in flight, the
   // analysis row already exists in the DB and is being updated stage by
-  // stage. Poll the list endpoint to find that row and reflect its live
-  // status + percent right inside the button instead of a static spinner.
+  // stage. Poll for that row's live status + percent right inside the
+  // button instead of a static spinner.
+  //
+  // This used to poll GET /api/analysis/ (the full list) once a second,
+  // which re-downloads every analysis ever run — including each one's
+  // full report metadata blob — just to read one row's status. On a
+  // history of any real size that's easily 1-2MB per tick, so a 20-30s
+  // analysis was spending most of its wall-clock time transferring and
+  // JSON-parsing megabytes of data it threw away immediately after
+  // reading `status`/`progress_percent` off one row.
+  //
+  // Now: resolve the row id once (cheap, single lightweight lookup), then
+  // poll only GET /api/analysis/<id>/progress/, which returns a handful
+  // of scalar fields — same lightweight endpoint the step tracker already
+  // uses. That's a response measured in bytes, not megabytes.
   const startPolling = useCallback((submittedUrl, submittedAt) => {
     stopPolling();
     trackedId.current = null;
     pollRef.current = setInterval(async () => {
       try {
-        const res = await api.get('analysis/');
-        const rows = res.data.results || [];
-        let row;
-        if (trackedId.current != null) {
-          row = rows.find(r => r.id === trackedId.current);
-        } else {
-          // Not found yet — match by url + recency until we lock onto an id.
-          row = rows
+        if (trackedId.current == null) {
+          // Not found yet — match by url + recency until we lock onto an
+          // id. This one list call is unavoidable (we don't have an id
+          // yet), but it happens at most a couple of times, not every tick.
+          const res = await api.get('analysis/');
+          const rows = res.data.results || [];
+          const row = rows
             .filter(r => r.repo_url === submittedUrl && new Date(r.created_at) >= submittedAt)
             .sort((a, b) => b.id - a.id)[0];
-          if (row) trackedId.current = row.id;
+          if (row) {
+            trackedId.current = row.id;
+            setStage(row.status);
+            setPercent(row.progress_percent ?? 0);
+          }
+          return;
         }
-        if (row) {
-          setStage(row.status);
-          setPercent(row.progress_percent ?? 0);
-        }
+
+        const res = await api.get(`analysis/${trackedId.current}/progress/`);
+        setStage(res.data.status);
+        setPercent(res.data.progress_percent ?? 0);
       } catch {
         // transient — keep trying, the next tick will retry
       }
@@ -86,7 +104,7 @@ export default function RepositoryForm({ onAnalysisStarted, toast, findExistingB
     startPolling(trimmed, submittedAt);
 
     try {
-      const res = await api.post('analyze/', { repo_url: trimmed });
+      const res = await api.post('analyze/', { repo_url: trimmed, deep_scan: deepScan });
       setRepoUrl('');
       toast?.success(`Analysis ${res.data.cached ? 'loaded from cache' : 'completed'} for ${res.data.data?.project_name || 'repository'}`);
       onAnalysisStarted?.(res.data.data);
@@ -175,6 +193,23 @@ export default function RepositoryForm({ onAnalysisStarted, toast, findExistingB
           </span>
         </button>
       </div>
+
+      <label style={{
+        display: 'flex', alignItems: 'center', gap: 8, marginTop: 10,
+        fontSize: 12.5, color: 'var(--text-muted)', cursor: loading ? 'default' : 'pointer',
+        userSelect: 'none', width: 'fit-content',
+      }}>
+        <input
+          type="checkbox"
+          checked={deepScan}
+          disabled={loading}
+          onChange={e => setDeepScan(e.target.checked)}
+          style={{ width: 14, height: 14, accentColor: 'var(--accent, #4f7ef8)', cursor: 'inherit' }}
+        />
+        Deep scan — check every file, no sampling
+        <span title="On large repos, security/quality analysis samples a representative subset of files by default to stay fast. Turning this on reads every matching file instead — exhaustive, but can take several minutes on very large repos."
+              style={{ color: 'var(--text-faint, #9ca3af)', cursor: 'help' }}>ⓘ</span>
+      </label>
     </form>
   );
 }

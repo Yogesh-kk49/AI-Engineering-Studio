@@ -324,13 +324,25 @@ class SecurityService:
         ".sh", ".bash",
     }
 
+    # Reading + regex-scanning every matching file is fine for a typical
+    # repo (hundreds to low thousands of files) but becomes the dominant
+    # cost on huge ones — e.g. kubernetes/kubernetes has tens of thousands
+    # of matching files, each requiring a disk read plus a full pass of
+    # every pattern in _LINE_PATTERNS over every line. That alone was
+    # responsible for multi-minute analyses. Cap how many files this loop
+    # actually opens; `scanned_files` on the result always reports the
+    # real number scanned, so nothing is silently mispresented as "the
+    # whole repo" when it wasn't.
+    _MAX_SCAN_FILES = 600
+
     # How many example (file, line) locations to keep per grouped finding.
     # The true total is preserved in `occurrences` regardless of this cap.
     _MAX_LOCATIONS_PER_GROUP = 5
 
-    def __init__(self, ctx: RepoContext):
+    def __init__(self, ctx: RepoContext, *, deep_scan: bool = False):
         self.ctx = ctx
         self.root = ctx.local_path
+        self.deep_scan = deep_scan
         self._findings: list[SecurityFinding] = []
 
     # ------------------------------------------------------------------
@@ -340,9 +352,11 @@ class SecurityService:
     def analyze(self) -> SecurityResult:
         scanned = 0
 
-        for rel_path in self.ctx.all_files:
-            if rel_path.suffix.lower() not in self._SCAN_EXTENSIONS:
-                continue
+        candidates = [f for f in self.ctx.all_files if f.suffix.lower() in self._SCAN_EXTENSIONS]
+        if not self.deep_scan and len(candidates) > self._MAX_SCAN_FILES:
+            candidates = self._evenly_sample(candidates, self._MAX_SCAN_FILES)
+
+        for rel_path in candidates:
             full_path = self.root / rel_path
             try:
                 text = full_path.read_text(encoding="utf-8", errors="ignore")
@@ -388,6 +402,27 @@ class SecurityService:
             scanned_files=scanned,
             recommendations=recs,
         )
+
+    # ------------------------------------------------------------------
+    # Sampling
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _evenly_sample(items: list, limit: int) -> list:
+        """
+        Pick `limit` items spread evenly across the list rather than just
+        the first N. `self.ctx.all_files` comes from an os.walk(), so the
+        first N entries alphabetically/positionally tend to cluster in one
+        or two top-level directories — an even stride keeps the sample
+        representative of the whole tree instead of e.g. only ever
+        scanning files under "api/" on a repo where that happens to sort
+        first.
+        """
+        n = len(items)
+        if n <= limit:
+            return items
+        step = n / limit
+        return [items[int(i * step)] for i in range(limit)]
 
     # ------------------------------------------------------------------
     # Grouping

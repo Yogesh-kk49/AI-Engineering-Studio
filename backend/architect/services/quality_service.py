@@ -97,13 +97,20 @@ class QualityService:
         "Dead Code Risk":  0.02,
     }
 
-    def __init__(self, ctx: RepoContext):
+    def __init__(self, ctx: RepoContext, *, deep_scan: bool = False):
         self.ctx = ctx
         self.root = ctx.local_path
+        self.deep_scan = deep_scan
         self._py_files: list[Path] = []
         self._ts_files: list[Path] = []
         self._js_files: list[Path] = []
         self._all_src: list[Path] = []
+
+    def _capped(self, items: list, limit: int) -> list:
+        """Sample cap for expensive per-file reads. In deep-scan mode,
+        every matching file is read instead of a bounded sample — slower,
+        but exhaustive rather than representative."""
+        return items if self.deep_scan else items[:limit]
 
     # ------------------------------------------------------------------
     # Public
@@ -162,7 +169,7 @@ class QualityService:
         line_counts = []
         complex_files = []
 
-        for path in self._py_files[:300]:          # sample cap
+        for path in self._capped(self._py_files, 300):          # sample cap
             try:
                 source = path.read_text(encoding="utf-8", errors="ignore")
                 lines = source.splitlines()
@@ -197,7 +204,7 @@ class QualityService:
 
         # Naming: detect classes/functions without CamelCase or snake_case
         bad_names = 0
-        for path in self._py_files[:100]:
+        for path in self._capped(self._py_files, 100):
             try:
                 tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"))
                 for node in ast.walk(tree):
@@ -287,7 +294,7 @@ class QualityService:
 
         # docstring ratio in Python files
         total_funcs = docstringed = 0
-        for path in self._py_files[:200]:
+        for path in self._capped(self._py_files, 200):
             try:
                 tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"))
                 for node in ast.walk(tree):
@@ -312,7 +319,7 @@ class QualityService:
         # Inline comment density
         inline_comments = 0
         total_lines = 0
-        for path in self._py_files[:100]:
+        for path in self._capped(self._py_files, 100):
             try:
                 lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
                 total_lines += len(lines)
@@ -355,7 +362,7 @@ class QualityService:
 
         # Count typed vs untyped functions
         typed = untyped = 0
-        for path in self._py_files[:150]:
+        for path in self._capped(self._py_files, 150):
             try:
                 tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"))
                 for node in ast.walk(tree):
@@ -455,7 +462,7 @@ class QualityService:
 
         # Scan source files for hardcoded secrets (sample)
         secret_hits: list[str] = []
-        for path in self._all_src[:200]:
+        for path in self._capped(self._all_src, 200):
             try:
                 text = path.read_text(encoding="utf-8", errors="ignore")
                 if _SECRET_RE.search(text):
@@ -646,7 +653,7 @@ class QualityService:
         # Check for circular import patterns (heuristic: same-module cross-imports)
         module_names = {p.stem for p in self._py_files}
         cross_imports = 0
-        for path in self._py_files[:100]:
+        for path in self._capped(self._py_files, 100):
             try:
                 tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"))
                 for node in ast.walk(tree):
@@ -677,7 +684,7 @@ class QualityService:
         score = 85.0
 
         unused_imports_count = 0
-        for path in self._py_files[:150]:
+        for path in self._capped(self._py_files, 150):
             try:
                 source = path.read_text(encoding="utf-8", errors="ignore")
                 tree = ast.parse(source)
@@ -718,7 +725,7 @@ class QualityService:
         """Return top 5 files that need the most attention."""
         scored: list[tuple[float, str, str]] = []
 
-        for path in self._py_files[:300]:
+        for path in self._capped(self._py_files, 300):
             try:
                 source = path.read_text(encoding="utf-8", errors="ignore")
                 lines = source.splitlines()
@@ -767,7 +774,7 @@ class QualityService:
 
     def _scan_imports(self) -> str:
         result = []
-        for path in self._py_files[:50]:
+        for path in self._capped(self._py_files, 50):
             try:
                 result.append(path.read_text(encoding="utf-8", errors="ignore")[:2000])
             except Exception:

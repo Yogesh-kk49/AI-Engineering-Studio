@@ -143,11 +143,13 @@ class AnalysisOrchestrator:
         *,
         branch: str = "",
         force_reclone: bool = False,
+        deep_scan: bool = False,
         progress_callback: "Callable[[str, int, str], None] | None" = None,
     ):
         self.repo_url = repo_url
         self.branch = branch
         self.force_reclone = force_reclone
+        self.deep_scan = deep_scan
         # Optional hook: progress_callback(stage, percent, message). Called
         # by the Celery task to push live progress into the DB/WebSocket
         # without the orchestrator needing to know anything about Celery
@@ -241,14 +243,14 @@ class AnalysisOrchestrator:
 
     def _step_quality(self, ctx: RepoContext, report: AnalysisReport) -> QualityResult:
         try:
-            return QualityService(ctx).analyze()
+            return QualityService(ctx, deep_scan=self.deep_scan).analyze()
         except Exception as exc:
             report.errors.append(f"Quality analysis failed: {exc}")
             return QualityResult()
 
     def _step_security(self, ctx: RepoContext, report: AnalysisReport) -> SecurityResult:
         try:
-            return SecurityService(ctx).analyze()
+            return SecurityService(ctx, deep_scan=self.deep_scan).analyze()
         except Exception as exc:
             report.errors.append(f"Security analysis failed: {exc}")
             return SecurityResult()

@@ -92,7 +92,7 @@ def _build_metadata(report) -> dict:
     max_retries=3,
     acks_late=True,
 )
-def run_repository_analysis(self, analysis_id: int, repo_url: str, branch: str = "", force_reclone: bool = False):
+def run_repository_analysis(self, analysis_id: int, repo_url: str, branch: str = "", force_reclone: bool = False, deep_scan: bool = False):
     """
     Background job: clone, scan, analyze, and persist results for a single
     RepositoryAnalysis row. Reports live progress back onto the row so the
@@ -138,6 +138,7 @@ def run_repository_analysis(self, analysis_id: int, repo_url: str, branch: str =
             repo_url,
             branch=branch,
             force_reclone=force_reclone,
+            deep_scan=deep_scan,
             progress_callback=on_progress,
         ).run()
 

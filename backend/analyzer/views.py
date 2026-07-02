@@ -42,6 +42,7 @@ class AnalyzeRepositoryView(APIView):
         repo_url = request.data.get("repo_url", "").strip()
         branch = request.data.get("branch", "").strip()
         force_reclone = bool(request.data.get("force_reclone", False))
+        deep_scan = bool(request.data.get("deep_scan", False))
 
         if not repo_url:
             return Response({"error": "repo_url is required."}, status=status.HTTP_400_BAD_REQUEST)
@@ -57,8 +58,12 @@ class AnalyzeRepositoryView(APIView):
         project_name = repo_name
 
         # ── Repository cache check (commit-SHA based) ────────────────────
+        # Skipped for deep_scan requests too — a cached result may have
+        # been produced by a sampled (non-deep) run, and returning that
+        # would silently give the caller sampled data when they explicitly
+        # asked for exhaustive coverage.
         latest_sha = None
-        if not force_reclone:
+        if not force_reclone and not deep_scan:
             latest_sha = get_latest_commit_sha(owner, repo_name, branch or None)
             if latest_sha:
                 cached = (
@@ -97,7 +102,7 @@ class AnalyzeRepositoryView(APIView):
             commit_sha=latest_sha or "",
         )
 
-        task = run_repository_analysis.delay(analysis.pk, repo_url, branch, force_reclone)
+        task = run_repository_analysis.delay(analysis.pk, repo_url, branch, force_reclone, deep_scan)
         RepositoryAnalysis.objects.filter(pk=analysis.pk).update(celery_task_id=task.id)
         analysis.refresh_from_db()
 

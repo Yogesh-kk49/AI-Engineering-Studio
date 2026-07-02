@@ -12,12 +12,13 @@ Responsibilities
 
 from __future__ import annotations
 
+import io
 import logging
 import os
 import re
 import shutil
 import stat
-import subprocess
+import tarfile
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -481,6 +482,30 @@ class GitHubClient:
     # ------------------------------------------------------------------
 
     def _clone_or_update(self) -> None:
+        """
+        Fetch the repo contents. This used to shell out to `git clone`,
+        which is what was causing the multi-minute "stuck scanning" hangs:
+        a plain `git clone`/`fetch` will silently sit forever waiting on a
+        terminal credential prompt for any repo it can't access anonymously
+        (private repos, or public repos once the unauthenticated rate limit
+        is hit), and even on the happy path the full git protocol handshake
+        is much slower than it needs to be for what we actually want, which
+        is just "the files as of one commit".
+
+        Instead we download GitHub's pre-built tarball for the branch
+        (the same artifact the "Download ZIP" button on GitHub effectively
+        uses) in one plain HTTPS request and extract it straight to disk.
+        No git binary, no credential prompts, no multi-round-trip protocol
+        negotiation — just one download, which is what gets this down from
+        minutes to (typically) well under a second for small/medium repos.
+
+        We still have to land the files somewhere real on disk, since the
+        downstream analyzer services (architecture/quality/security/deps)
+        walk and read actual files — but that "somewhere" is always the OS
+        temp directory (CLONE_BASE_DIR), never a folder inside the project,
+        and it's deleted again the moment the analysis finishes (see
+        tasks.py) or, for force_reclone, right before we re-fetch below.
+        """
         branch = self.requested_branch or self.ctx.default_branch or "main"
         self.ctx.default_branch = self.ctx.default_branch or branch
 
@@ -490,66 +515,84 @@ class GitHubClient:
         safe_branch = re.sub(r"[^A-Za-z0-9._-]", "_", branch)
         dest = CLONE_BASE_DIR / self.owner / f"{self.repo_name}@{safe_branch}"
 
-        if dest.exists() and self.force_reclone:
+        if dest.exists():
+            if not self.force_reclone:
+                # Already have a copy from earlier in this same process
+                # (or a prior request that didn't get cleaned up) — reuse
+                # it instead of re-downloading.
+                self.ctx.local_path = dest
+                self.ctx.clone_success = True
+                sha = get_latest_commit_sha(self.owner, self.repo_name, branch)
+                if sha:
+                    self.ctx.commit_sha = sha
+                return
             if not force_rmtree(dest) and dest.exists():
                 # Windows MAX_PATH can leave a handful of deeply-nested
                 # files behind even after force_rmtree's retries. Rather
-                # than fail (or clone on top of stale files), clone into a
-                # fresh, uniquely-named sibling directory instead. The
-                # stale one is orphaned but harmless — it holds no repo
-                # data users would recognize, and gets swept up by a
+                # than fail (or extract on top of stale files), extract
+                # into a fresh, uniquely-named sibling directory instead.
+                # The stale one is orphaned but harmless — it holds no
+                # repo data users would recognize, and gets swept up by a
                 # future force_rmtree pass once its long-path files age out.
                 dest = CLONE_BASE_DIR / self.owner / f"{self.repo_name}@{safe_branch}__{os.getpid()}"
 
         self.ctx.local_path = dest
 
-        # -c core.longpaths=true tells git for Windows to use the
-        # `\\?\`-prefixed extended-length path form internally when
-        # checking out files, instead of silently skipping anything past
-        # the 260-char MAX_PATH limit — exactly what was truncating deep
-        # test-suite paths (e.g. Django's tests/forms_tests/field_tests/...)
-        # during checkout. Harmless no-op on macOS/Linux.
-        GIT_LONGPATHS = ["-c", "core.longpaths=true"]
-
         try:
-            if dest.exists():
-                subprocess.run(
-                    ["git", *GIT_LONGPATHS, "-C", str(dest), "fetch", "--quiet",
-                     "--depth", "1", "--no-tags", "origin", branch],
-                    check=True, capture_output=True, timeout=120,
-                )
-                subprocess.run(
-                    ["git", *GIT_LONGPATHS, "-C", str(dest), "reset", "--quiet", "--hard", "origin/" + branch],
-                    check=True, capture_output=True, timeout=60,
-                )
-            else:
-                clone_url = self._build_clone_url()
-                subprocess.run(
-                    ["git", *GIT_LONGPATHS, "clone", "--depth", "1", "--quiet",
-                     "--single-branch", "--no-tags", "--branch", branch,
-                     clone_url, str(dest)],
-                    check=True, capture_output=True, timeout=180,
-                )
+            headers = _api_headers()
+            resp = requests.get(
+                f"{GITHUB_API_BASE}/repos/{self.owner}/{self.repo_name}/tarball/{branch}",
+                headers=headers,
+                timeout=(10, 60),  # (connect, read) — fail fast instead of hanging
+                stream=True,
+            )
+            resp.raise_for_status()
+
+            with tarfile.open(fileobj=io.BytesIO(resp.content), mode="r:gz") as tar:
+                members = tar.getmembers()
+                if not members:
+                    raise ValueError("Downloaded archive was empty.")
+
+                # GitHub's tarball wraps everything in a single top-level
+                # "{owner}-{repo}-{sha}/" folder — strip it so `dest` ends
+                # up holding the repo contents directly.
+                root_prefix = members[0].name.split("/", 1)[0] + "/"
+
+                dest.mkdir(parents=True, exist_ok=True)
+                for member in members:
+                    if not member.name.startswith(root_prefix):
+                        continue
+                    rel = member.name[len(root_prefix):]
+                    if not rel:
+                        continue
+                    # Guard against path traversal from a malicious/broken archive.
+                    target = (dest / rel).resolve()
+                    if not target.is_relative_to(dest.resolve()):
+                        continue
+                    if member.isdir():
+                        target.mkdir(parents=True, exist_ok=True)
+                    elif member.isfile():
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        extracted = tar.extractfile(member)
+                        if extracted is None:
+                            continue
+                        with open(target, "wb") as out_f:
+                            shutil.copyfileobj(extracted, out_f)
+
             self.ctx.clone_success = True
 
-            # Capture the exact commit we ended up on — this is what powers
-            # the repository cache (skip re-analysis when the SHA matches a
-            # previously completed analysis for this repo+branch).
-            sha_result = subprocess.run(
-                ["git", "-C", str(dest), "rev-parse", "HEAD"],
-                check=True, capture_output=True, timeout=15,
-            )
-            self.ctx.commit_sha = sha_result.stdout.decode().strip()
+            # We already know exactly which commit this tarball is (GitHub
+            # resolves `branch` server-side before building it), so grab it
+            # from the API instead of needing a local git history for it.
+            sha = get_latest_commit_sha(self.owner, self.repo_name, branch)
+            self.ctx.commit_sha = sha or ""
 
-        except subprocess.CalledProcessError as exc:
-            self.ctx.errors.append(f"Git error: {exc.stderr.decode()[:300]}")
+        except requests.exceptions.RequestException as exc:
+            self.ctx.errors.append(f"Download error: {exc}")
+        except (tarfile.TarError, ValueError) as exc:
+            self.ctx.errors.append(f"Archive error: {exc}")
         except Exception as exc:
             self.ctx.errors.append(f"Clone error: {exc}")
-
-    def _build_clone_url(self) -> str:
-        if GITHUB_TOKEN:
-            return f"https://{GITHUB_TOKEN}@github.com/{self.owner}/{self.repo_name}.git"
-        return f"https://github.com/{self.owner}/{self.repo_name}.git"
 
     # ------------------------------------------------------------------
     # File-system walk
