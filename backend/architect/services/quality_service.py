@@ -24,6 +24,7 @@ from __future__ import annotations
 import ast
 import re
 import statistics
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -64,6 +65,21 @@ def _grade(score: float) -> str:
     if score >= 55: return "C"
     if score >= 35: return "D"
     return "F"
+
+
+def _safe_ast_parse(source: str):
+    """
+    ast.parse() on an arbitrary repo's Python files is entirely capable of
+    hitting non-raw-string regex/backslash literals *in that repo's own
+    code* — Python legitimately warns about those (SyntaxWarning: invalid
+    escape sequence), but it's a property of the code being analyzed, not
+    of this tool, and it was cluttering the console with dozens of lines
+    per large repo. Scope the suppression to just this call so we don't
+    accidentally hide a real warning from anywhere else.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", SyntaxWarning)
+        return ast.parse(source)
 
 
 _SECRET_RE = re.compile(
@@ -206,7 +222,7 @@ class QualityService:
         bad_names = 0
         for path in self._capped(self._py_files, 100):
             try:
-                tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"))
+                tree = _safe_ast_parse(path.read_text(encoding="utf-8", errors="ignore"))
                 for node in ast.walk(tree):
                     if isinstance(node, ast.FunctionDef):
                         if re.search(r"[A-Z]", node.name) and not node.name.startswith("__"):
@@ -296,7 +312,7 @@ class QualityService:
         total_funcs = docstringed = 0
         for path in self._capped(self._py_files, 200):
             try:
-                tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"))
+                tree = _safe_ast_parse(path.read_text(encoding="utf-8", errors="ignore"))
                 for node in ast.walk(tree):
                     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                         total_funcs += 1
@@ -364,7 +380,7 @@ class QualityService:
         typed = untyped = 0
         for path in self._capped(self._py_files, 150):
             try:
-                tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"))
+                tree = _safe_ast_parse(path.read_text(encoding="utf-8", errors="ignore"))
                 for node in ast.walk(tree):
                     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                         has_ann = node.returns is not None or any(
@@ -655,7 +671,7 @@ class QualityService:
         cross_imports = 0
         for path in self._capped(self._py_files, 100):
             try:
-                tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"))
+                tree = _safe_ast_parse(path.read_text(encoding="utf-8", errors="ignore"))
                 for node in ast.walk(tree):
                     if isinstance(node, (ast.Import, ast.ImportFrom)):
                         names = [n.name for n in getattr(node, "names", [])]
@@ -687,7 +703,7 @@ class QualityService:
         for path in self._capped(self._py_files, 150):
             try:
                 source = path.read_text(encoding="utf-8", errors="ignore")
-                tree = ast.parse(source)
+                tree = _safe_ast_parse(source)
                 imported_names: set[str] = set()
                 for node in ast.walk(tree):
                     if isinstance(node, ast.Import):

@@ -268,7 +268,16 @@ class AnalysisOrchestrator:
 
     def _step_security(self, ctx: RepoContext, report: AnalysisReport) -> SecurityResult:
         try:
-            return SecurityService(ctx, deep_scan=self.deep_scan).analyze()
+            def on_file_progress(done: int, total: int) -> None:
+                # This step shares the 40%→75% band with architecture/
+                # quality/dependencies, which are typically much faster —
+                # security is usually the long pole on a deep scan, so we
+                # scale its own file-by-file progress across most of that
+                # band rather than treating it as an all-or-nothing chunk.
+                pct = 40 + int((done / total) * 33) if total else 40
+                self._report_progress("Scanning", min(pct, 73),
+                                       f"Security scan: {done:,}/{total:,} files checked...")
+            return SecurityService(ctx, deep_scan=self.deep_scan, file_progress_callback=on_file_progress).analyze()
         except Exception as exc:
             report.errors.append(f"Security analysis failed: {exc}")
             return SecurityResult()

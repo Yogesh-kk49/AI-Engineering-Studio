@@ -339,11 +339,18 @@ class SecurityService:
     # The true total is preserved in `occurrences` regardless of this cap.
     _MAX_LOCATIONS_PER_GROUP = 5
 
-    def __init__(self, ctx: RepoContext, *, deep_scan: bool = False):
+    def __init__(self, ctx: RepoContext, *, deep_scan: bool = False, file_progress_callback=None):
         self.ctx = ctx
         self.root = ctx.local_path
         self.deep_scan = deep_scan
         self._findings: list[SecurityFinding] = []
+        # Called periodically as (files_scanned, files_total) during the
+        # main scan loop. Deep-scan runs on a large repo can take minutes;
+        # without this the progress bar sits frozen on "40%" the whole
+        # time, which looks identical to a hang even though real work is
+        # happening. Optional — a plain analyze() call with no callback
+        # behaves exactly as before.
+        self._file_progress_callback = file_progress_callback or (lambda done, total: None)
 
     # ------------------------------------------------------------------
     # Public
@@ -356,7 +363,16 @@ class SecurityService:
         if not self.deep_scan and len(candidates) > self._MAX_SCAN_FILES:
             candidates = self._evenly_sample(candidates, self._MAX_SCAN_FILES)
 
-        for rel_path in candidates:
+        total = len(candidates)
+        # Report every ~1% of progress (at least every 25 files) rather
+        # than on every single file — the callback ultimately triggers a
+        # DB write, and calling that per-file on a 50,000-file deep scan
+        # would trade "looks frozen" for "spends real time writing status
+        # updates instead of scanning". Also always fire on the very last
+        # file so the caller sees a final 100%-of-this-step tick.
+        report_every = max(25, total // 100) if total else 1
+
+        for i, rel_path in enumerate(candidates):
             full_path = self.root / rel_path
             try:
                 text = full_path.read_text(encoding="utf-8", errors="ignore")
@@ -364,6 +380,8 @@ class SecurityService:
                 continue
             scanned += 1
             self._scan_lines(text, str(rel_path))
+            if i % report_every == 0 or i == total - 1:
+                self._file_progress_callback(i + 1, total)
 
         # Settings-level checks
         self._scan_settings()
