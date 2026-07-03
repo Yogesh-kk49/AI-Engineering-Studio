@@ -27,6 +27,7 @@ import logging
 
 from celery import shared_task
 from celery.exceptions import SoftTimeLimitExceeded
+from django.conf import settings
 from django.utils import timezone
 
 from architect.services.analysis_orchestrator import AnalysisOrchestrator, report_to_dict
@@ -130,8 +131,18 @@ def run_repository_analysis(self, analysis_id: int, repo_url: str, branch: str =
         )
         # Also publish through Celery's own state machine — useful if a
         # future WebSocket consumer wants to subscribe to task events
-        # instead of polling the database.
-        self.update_state(state="PROGRESS", meta={"stage": stage, "percent": percent, "message": message})
+        # instead of polling the database. This writes to the *result
+        # backend* (Redis), which is a separate thing from the eager-mode
+        # fallback: CELERY_TASK_ALWAYS_EAGER only bypasses the broker
+        # (task dispatch), not this. If USE_REDIS is off and nothing is
+        # actually running on localhost:6379, every one of these calls
+        # was blocking trying to reach a dead Redis instance before timing
+        # out — 7 calls per analysis, silently adding up to the majority
+        # of total wall-clock time. Skip it entirely when there's no real
+        # backend to talk to; the DB write above is what polling clients
+        # actually read from anyway.
+        if getattr(settings, "USE_REDIS", False):
+            self.update_state(state="PROGRESS", meta={"stage": stage, "percent": percent, "message": message})
 
     try:
         report = AnalysisOrchestrator(

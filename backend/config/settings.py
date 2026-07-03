@@ -91,6 +91,26 @@ DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
         'NAME': BASE_DIR / 'db.sqlite3',
+        'OPTIONS': {
+            # SQLite's default journal mode gives a writer exclusive
+            # access — so this app's own progress polling (a GET request
+            # on one thread, reading the analysis row every ~1s) could
+            # block, and get blocked by, the analysis pipeline's own
+            # status writes on another thread. Since the eager-mode
+            # pipeline updates progress ~7 times per run and each write
+            # could queue behind an in-flight poll (or vice versa), that
+            # contention was invisible to per-stage timing yet accounted
+            # for the bulk of total wall-clock time (~20s of a 22s run
+            # was unaccounted for by any actual analysis work).
+            #
+            # WAL (Write-Ahead Logging) mode lets reads and writes happen
+            # concurrently instead of serializing them — this is the
+            # standard fix for exactly this pattern. `timeout` (seconds)
+            # is a safety net: how long to wait for a lock before raising
+            # "database is locked" instead of hanging silently.
+            "init_command": "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;",
+            "timeout": 20,
+        },
     }
 }
 

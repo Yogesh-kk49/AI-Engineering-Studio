@@ -20,6 +20,8 @@ import shutil
 import stat
 import tarfile
 import tempfile
+import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -38,6 +40,23 @@ GITHUB_API_BASE = "https://api.github.com"
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")          # optional – raises rate-limit cap
 CLONE_BASE_DIR = Path(os.getenv("REPO_CLONE_DIR") or (Path(tempfile.gettempdir()) / "ai_studio_repos"))
 REQUEST_TIMEOUT = 15   # seconds
+
+# A single analysis run makes several sequential calls to api.github.com
+# (repo summary, languages, contributors, commit SHA — sometimes twice)
+# plus one to codeload.github.com for the tarball. Every one of those used
+# to go through a bare `requests.get(...)` call, which opens a brand-new TCP
+# connection and does a full TLS handshake *every single call* — no
+# keep-alive reuse, even though most of them hit the exact same host back
+# to back. On networks where a fresh HTTPS handshake is slow (VPNs,
+# corporate proxies/antivirus doing TLS inspection, generally poor
+# connectivity), that overhead is paid 5-6 times per analysis instead of
+# once. A shared Session pools and reuses connections per host, so only
+# the first request to a given host pays full handshake cost — this is
+# very often the actual explanation when even a one-file repo takes many
+# seconds to analyze, since that cost has nothing to do with repo size.
+_session = requests.Session()
+_adapter = requests.adapters.HTTPAdapter(pool_connections=10, pool_maxsize=10)
+_session.mount("https://", _adapter)
 
 
 def _long_path(path: Path) -> str:
@@ -247,7 +266,7 @@ def _api_headers() -> dict[str, str]:
 
 def _get(endpoint: str) -> dict | list:
     """GET from GitHub REST API; returns parsed JSON."""
-    resp = requests.get(
+    resp = _session.get(
         f"{GITHUB_API_BASE}{endpoint}",
         headers=_api_headers(),
         timeout=REQUEST_TIMEOUT,
@@ -316,7 +335,7 @@ def fetch_file_content(owner: str, repo: str, ref: str, path: str) -> dict[str, 
 
     url = f"https://raw.githubusercontent.com/{owner}/{repo}/{ref}/{safe_path}"
     try:
-        resp = requests.get(url, timeout=REQUEST_TIMEOUT, stream=True)
+        resp = _session.get(url, timeout=REQUEST_TIMEOUT, stream=True)
         if resp.status_code == 404:
             return {"error": "File not found at this branch/commit."}
         resp.raise_for_status()
@@ -354,12 +373,13 @@ def get_latest_commit_sha(owner: str, repo: str, branch: str | None = None) -> s
     Cached for COMMIT_SHA_CACHE_TTL seconds so a burst of duplicate
     "analyze this repo" requests doesn't hammer the GitHub API.
     """
-    resolved_branch = branch
-    if not resolved_branch:
-        summary = get_repo_summary(owner, repo)
-        if not summary or not isinstance(summary, dict):
-            return None
-        resolved_branch = summary.get("default_branch", "main")
+    # GitHub's commits endpoint accepts the literal ref "HEAD" to mean
+    # "the default branch, whatever it's called" — so when no branch was
+    # requested we don't need a separate round trip to look up
+    # default_branch first (as we used to, via get_repo_summary). That
+    # was an entire extra sequential network call for the common case of
+    # "just analyze this repo, don't care which branch".
+    resolved_branch = branch or "HEAD"
 
     cache_key = f"gh:commit_sha:{owner}/{repo}:{resolved_branch}"
     data = _get_cached(
@@ -403,11 +423,19 @@ class GitHubClient:
     # ------------------------------------------------------------------
 
     def build(self) -> RepoContext:
+        t0 = time.monotonic()
         self._fetch_api_metadata()
+        logger.warning("TIMING   _fetch_api_metadata: %.2fs", time.monotonic() - t0)
+
+        t0 = time.monotonic()
         self._clone_or_update()
+        logger.warning("TIMING   _clone_or_update (tarball dl+extract): %.2fs", time.monotonic() - t0)
+
         if self.ctx.clone_success:
+            t0 = time.monotonic()
             self._walk_repo()
             self._set_presence_flags()
+            logger.warning("TIMING   _walk_repo+_set_presence_flags: %.2fs", time.monotonic() - t0)
         return self.ctx
 
     # ------------------------------------------------------------------
@@ -415,7 +443,22 @@ class GitHubClient:
     # ------------------------------------------------------------------
 
     def _fetch_api_metadata(self) -> None:
-        data = get_repo_summary(self.owner, self.repo_name)
+        # None of these three calls depend on each other — they only need
+        # owner/repo, which we already have — so there's no reason to pay
+        # for three round trips back to back. Run them concurrently
+        # (releases the GIL while waiting on network I/O, so this is real
+        # parallelism, unlike the CPU-bound per-file analysis steps) and
+        # apply all the results afterward, back on this thread, so we're
+        # never writing to `self.ctx` from multiple threads at once.
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            summary_future = pool.submit(get_repo_summary, self.owner, self.repo_name)
+            languages_future = pool.submit(self._fetch_languages)
+            contributors_future = pool.submit(self._fetch_contributors_count)
+
+            data = summary_future.result()
+            languages_result = languages_future.result()
+            contributors_result = contributors_future.result()
+
         if data and isinstance(data, dict):
             self.ctx.api_data = data
             self.ctx.default_branch = data.get("default_branch", "main")
@@ -451,14 +494,33 @@ class GitHubClient:
                 "API metadata error: could not reach GitHub or repository not found/accessible."
             )
 
-        try:
-            langs: dict = _get(f"/repos/{self.owner}/{self.repo_name}/languages")  # type: ignore[assignment]
+        langs, langs_error = languages_result
+        if langs_error:
+            self.ctx.errors.append(langs_error)
+        else:
             self.ctx.languages = langs
-        except Exception as exc:
-            self.ctx.errors.append(f"Languages API error: {exc}")
 
+        self.ctx.contributors_count = contributors_result
+
+    def _fetch_languages(self) -> tuple[dict, str | None]:
         try:
-            resp = requests.get(
+            cache_key = f"gh:languages:{self.owner}/{self.repo_name}"
+            langs = cache.get(cache_key)
+            if langs is None:
+                langs = _get(f"/repos/{self.owner}/{self.repo_name}/languages")
+                cache.set(cache_key, langs, REPO_METADATA_CACHE_TTL)
+            return langs, None
+        except Exception as exc:
+            return {}, f"Languages API error: {exc}"
+
+    def _fetch_contributors_count(self) -> int:
+        try:
+            cache_key = f"gh:contributors_count:{self.owner}/{self.repo_name}"
+            cached_count = cache.get(cache_key)
+            if cached_count is not None:
+                return cached_count
+
+            resp = _session.get(
                 f"{GITHUB_API_BASE}/repos/{self.owner}/{self.repo_name}/contributors",
                 headers=_api_headers(),
                 params={"per_page": 1, "anon": "true"},
@@ -470,12 +532,14 @@ class GitHubClient:
             link_header = resp.headers.get("Link", "")
             match = re.search(r'[?&]page=(\d+)>;\s*rel="last"', link_header)
             if match:
-                self.ctx.contributors_count = int(match.group(1))
+                count = int(match.group(1))
             else:
                 body = resp.json()
-                self.ctx.contributors_count = len(body) if isinstance(body, list) else 0
+                count = len(body) if isinstance(body, list) else 0
+            cache.set(cache_key, count, REPO_METADATA_CACHE_TTL)
+            return count
         except Exception:
-            pass  # non-critical — contributor count is a nice-to-have
+            return 0  # non-critical — contributor count is a nice-to-have
 
     # ------------------------------------------------------------------
     # Clone / update
@@ -508,6 +572,13 @@ class GitHubClient:
         """
         branch = self.requested_branch or self.ctx.default_branch or "main"
         self.ctx.default_branch = self.ctx.default_branch or branch
+        # `ref` is what we actually send to GitHub. When no branch was
+        # requested, use "HEAD" (GitHub resolves it to the default branch
+        # server-side) instead of `branch`/`ctx.default_branch` — this is
+        # exactly the same ref the earlier cache check in views.py used,
+        # so the commit-SHA cache lookup below hits instead of paying for
+        # a second, redundant round trip under a differently-keyed entry.
+        ref = self.requested_branch or "HEAD"
 
         CLONE_BASE_DIR.mkdir(parents=True, exist_ok=True)
         # Namespace by branch so analyzing two branches of the same repo
@@ -522,7 +593,7 @@ class GitHubClient:
                 # it instead of re-downloading.
                 self.ctx.local_path = dest
                 self.ctx.clone_success = True
-                sha = get_latest_commit_sha(self.owner, self.repo_name, branch)
+                sha = get_latest_commit_sha(self.owner, self.repo_name, ref)
                 if sha:
                     self.ctx.commit_sha = sha
                 return
@@ -540,8 +611,8 @@ class GitHubClient:
 
         try:
             headers = _api_headers()
-            resp = requests.get(
-                f"{GITHUB_API_BASE}/repos/{self.owner}/{self.repo_name}/tarball/{branch}",
+            resp = _session.get(
+                f"{GITHUB_API_BASE}/repos/{self.owner}/{self.repo_name}/tarball/{ref}",
                 headers=headers,
                 timeout=(10, 60),  # (connect, read) — fail fast instead of hanging
                 stream=True,
@@ -565,6 +636,15 @@ class GitHubClient:
                     rel = member.name[len(root_prefix):]
                     if not rel:
                         continue
+                    # Skip vendored/generated dirs at extraction time, not
+                    # just when walking afterward — writing tens of
+                    # thousands of vendor/node_modules-style files to disk
+                    # only to immediately ignore them was pure wasted I/O,
+                    # and on a repo like kubernetes/kubernetes (whose
+                    # vendor/ alone can be the bulk of the tarball) it was
+                    # likely the single biggest chunk of that ~1 minute.
+                    if any(part in self._SKIP_DIRS for part in Path(rel).parts[:-1]):
+                        continue
                     # Guard against path traversal from a malicious/broken archive.
                     target = (dest / rel).resolve()
                     if not target.is_relative_to(dest.resolve()):
@@ -584,7 +664,7 @@ class GitHubClient:
             # We already know exactly which commit this tarball is (GitHub
             # resolves `branch` server-side before building it), so grab it
             # from the API instead of needing a local git history for it.
-            sha = get_latest_commit_sha(self.owner, self.repo_name, branch)
+            sha = get_latest_commit_sha(self.owner, self.repo_name, ref)
             self.ctx.commit_sha = sha or ""
 
         except requests.exceptions.RequestException as exc:
@@ -602,6 +682,12 @@ class GitHubClient:
         ".git", "node_modules", "__pycache__", ".tox", "venv", ".venv",
         "env", ".env", "dist", "build", ".mypy_cache", ".pytest_cache",
         "htmlcov", ".eggs", "*.egg-info",
+        # Vendored/generated dependency trees — can dwarf the actual repo
+        # (kubernetes/kubernetes's vendor/ alone is tens of thousands of
+        # files of third-party Go source) and are never what anyone wants
+        # architecture/quality/security/dependency analysis run against.
+        "vendor", "bower_components", "target", "coverage",
+        ".next", ".nuxt", ".cache", ".idea", ".vscode",
     }
 
     def _walk_repo(self) -> None:

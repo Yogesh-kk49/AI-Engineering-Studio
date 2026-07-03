@@ -23,6 +23,7 @@ task so the Django request layer stays non-blocking.
 
 from __future__ import annotations
 
+import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, asdict
@@ -33,6 +34,8 @@ from architect.services.quality_service import QualityService, QualityResult
 from architect.services.security_service import SecurityService, SecurityResult
 from architect.services.dependancy_service import DependencyService, DependencyResult
 from architect.services.predictions_service import PredictionsService, PredictionsResult
+
+logger = logging.getLogger(__name__)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -173,15 +176,19 @@ class AnalysisOrchestrator:
 
         # ── Step 1: Clone & metadata ──────────────────────────────────
         self._report_progress("Cloning", 10, "Cloning repository...")
+        t0 = time.monotonic()
         ctx = self._step_clone(report)
+        logger.warning("TIMING clone+metadata: %.2fs", time.monotonic() - t0)
         if not ctx.clone_success:
             report.errors.extend(ctx.errors)
             report.duration_seconds = round(time.monotonic() - start, 2)
             self._report_progress("Failed", 100, "Clone failed.")
             return report
 
+        t0 = time.monotonic()
         self._populate_repo_metadata(report, ctx)
         report.file_tree = self._build_file_tree(ctx)
+        logger.warning("TIMING populate_metadata+file_tree: %.2fs", time.monotonic() - t0)
         self._report_progress("Scanning", 30, "Scanning repository structure...")
 
         # ── Steps 2–5: Architecture / Quality / Security / Dependencies ──
@@ -194,20 +201,24 @@ class AnalysisOrchestrator:
         # queueing behind each other — this is usually the single biggest
         # chunk of total analysis time, so this is where it matters most.
         self._report_progress("Scanning", 40, "Analyzing architecture, quality, security & dependencies...")
+        t0 = time.monotonic()
         with ThreadPoolExecutor(max_workers=4, thread_name_prefix="analysis-step") as pool:
-            arch_future  = pool.submit(self._step_architecture, ctx, report)
-            qual_future  = pool.submit(self._step_quality, ctx, report)
-            sec_future   = pool.submit(self._step_security, ctx, report)
-            deps_future  = pool.submit(self._step_dependencies, ctx, report)
+            arch_future  = pool.submit(self._timed_step, "architecture", self._step_architecture, ctx, report)
+            qual_future  = pool.submit(self._timed_step, "quality", self._step_quality, ctx, report)
+            sec_future   = pool.submit(self._timed_step, "security", self._step_security, ctx, report)
+            deps_future  = pool.submit(self._timed_step, "dependencies", self._step_dependencies, ctx, report)
 
             arch    = arch_future.result()
             quality = qual_future.result()
             security = sec_future.result()
             deps    = deps_future.result()
+        logger.warning("TIMING architecture+quality+security+dependencies (parallel, wall clock): %.2fs", time.monotonic() - t0)
         self._report_progress("AI Analysis", 75, "Running predictions...")
 
         # ── Step 6: Predictions ───────────────────────────────────────
+        t0 = time.monotonic()
         predictions = self._step_predictions(ctx, arch, quality, security, report)
+        logger.warning("TIMING predictions: %.2fs", time.monotonic() - t0)
         self._report_progress("Generating Report", 90, "Generating final report...")
 
         # ── Step 7: Assemble ──────────────────────────────────────────
@@ -218,9 +229,16 @@ class AnalysisOrchestrator:
         report.predictions = predictions
         report.composite_score, report.composite_grade = self._composite(quality, security, deps, arch, predictions)
         report.duration_seconds = round(time.monotonic() - start, 2)
+        logger.warning("TIMING TOTAL: %.2fs", report.duration_seconds)
         self._report_progress("Completed", 100, "Analysis complete.")
 
         return report
+
+    def _timed_step(self, name: str, fn, *args):
+        t0 = time.monotonic()
+        result = fn(*args)
+        logger.warning("TIMING   %s (inside pool): %.2fs", name, time.monotonic() - t0)
+        return result
 
     # ------------------------------------------------------------------
     # Pipeline steps
