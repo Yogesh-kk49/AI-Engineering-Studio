@@ -10,6 +10,7 @@ from analyzer.views import (
     ExportMarkdownView,
     ExportPdfView,
     AnalysisFileContentView,
+    RepositoryChatView,
 )
 
 urlpatterns = [
@@ -22,4 +23,5 @@ urlpatterns = [
     path("analysis/<int:pk>/export/markdown/", ExportMarkdownView.as_view(), name="analysis-export-markdown"),
     path("analysis/<int:pk>/export/pdf/", ExportPdfView.as_view(), name="analysis-export-pdf"),
     path("analysis/<int:pk>/file/", AnalysisFileContentView.as_view(), name="analysis-file-content"),
+    path("analysis/<int:pk>/chat/", RepositoryChatView.as_view(), name="analysis-chat"),
 ]

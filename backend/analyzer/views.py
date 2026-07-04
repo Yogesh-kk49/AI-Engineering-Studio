@@ -1,5 +1,6 @@
 import logging
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from pathlib import Path
 
@@ -283,6 +284,153 @@ class AnalysisFileContentView(APIView):
         if "error" in result:
             return Response(result, status=status.HTTP_404_NOT_FOUND)
         return Response({"path": path, **result})
+
+
+def _flatten_file_tree(node: dict, paths: list, prefix: str = "") -> None:
+    """Walk the capped file_tree dict (as stored in analysis.metadata) and
+    collect a flat list of file paths, for feeding a lightweight file
+    listing to the chat context without needing a fresh clone."""
+    if not isinstance(node, dict):
+        return
+    name = node.get("name", "")
+    full = f"{prefix}/{name}" if prefix else name
+    if node.get("type") == "file":
+        if full:
+            paths.append(full)
+        return
+    for child in node.get("children") or []:
+        _flatten_file_tree(child, paths, full)
+
+
+class RepositoryChatView(APIView):
+    """
+    POST /api/analysis/<id>/chat/
+    Body: {"message": str, "history": [{"role": "user"|"model", "content": str}, ...]}
+
+    An AI chat interface scoped to one already-analyzed repository. Reuses
+    the same GeminiAgent as the AI-review pipeline step, but conversational
+    and able to generate code on request. Context is assembled from the
+    already-computed report (metadata) plus, when the user's message
+    mentions a specific file by name, that file's live content fetched
+    straight from GitHub's raw CDN (cloneless, same mechanism as the code
+    viewer) — so it can discuss/modify files beyond just the hotspots
+    baked into the original analysis.
+    """
+
+    MAX_HISTORY_TURNS = 12  # server-side cap regardless of what the client sends
+
+    def post(self, request, pk):
+        analysis, error_response = _get_completed_analysis_or_error(pk)
+        if error_response:
+            return error_response
+
+        message = (request.data.get("message") or "").strip()
+        if not message:
+            return Response({"error": "message is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        history = request.data.get("history") or []
+        if not isinstance(history, list):
+            history = []
+        history = history[-self.MAX_HISTORY_TURNS:]
+
+        m = analysis.metadata or {}
+        quality = m.get("quality") or {}
+        security = m.get("security") or {}
+
+        file_paths: list = []
+        _flatten_file_tree(m.get("file_tree") or {}, file_paths)
+
+        # Which files is the user pointing at? This needs to look beyond
+        # just the current message — a reply like "both" or "the first
+        # one" only makes sense against files the *assistant* named in
+        # its previous turn, which lives in `history`, not `message`.
+        # Search the current message plus the last couple of turns.
+        search_text = message + "\n" + "\n".join(
+            str(turn.get("content", "")) for turn in history[-4:]
+        )
+
+        # Candidate paths come from two sources: the file tree (forward-
+        # slash, since that's what flattening always produces) and the
+        # raw `file` values already sitting in the findings/hotspots
+        # (which on a Windows-run analysis are backslash-separated, since
+        # they were built from `str(Path)` on that OS). Normalize both to
+        # forward slashes for matching AND for the actual fetch — GitHub's
+        # raw-content URLs require forward slashes regardless of what OS
+        # produced the path originally.
+        finding_paths = [f.get("file", "") for f in (security.get("findings") or []) if f.get("file")]
+        hotspot_paths_raw = [h.get("file", "") for h in (quality.get("hotspots") or []) if h.get("file")]
+        candidate_paths = {p.replace("\\", "/") for p in (file_paths + finding_paths + hotspot_paths_raw) if p}
+
+        def _mentioned(path: str) -> bool:
+            basename = path.split("/")[-1]
+            windows_style = path.replace("/", "\\")
+            return path in search_text or windows_style in search_text or basename in search_text
+
+        try:
+            owner, repo_name = _parse_github_url(analysis.repo_url)
+            ref = analysis.commit_sha or analysis.branch or "HEAD"
+        except ValueError:
+            owner = repo_name = ref = None
+
+        # Hotspot files — fetch their real content (this was previously
+        # left as an empty string by mistake, which meant the model had
+        # nothing but a filename to look at and, reasonably, asked the
+        # user to paste the code themselves instead of reviewing it).
+        #
+        # Fetched concurrently rather than one-by-one: these are 5+
+        # independent network calls to GitHub's raw CDN made on *every*
+        # chat message (they don't change between turns in the same
+        # conversation, but re-fetching is simpler and safer than adding
+        # a cache here) — doing them sequentially would add real,
+        # avoidable latency to every single message.
+        hotspot_files = []
+        extra_files = []
+        if owner:
+            hotspot_paths = [h.get("file", "").replace("\\", "/") for h in (quality.get("hotspots") or [])[:5] if h.get("file")]
+            hotspot_reasons = {h.get("file", "").replace("\\", "/"): h.get("reasons", "") for h in (quality.get("hotspots") or [])}
+            matched_paths = [p for p in candidate_paths if _mentioned(p)][:5]
+
+            with ThreadPoolExecutor(max_workers=max(len(hotspot_paths) + len(matched_paths), 1)) as pool:
+                hotspot_futures = {pool.submit(fetch_file_content, owner, repo_name, ref, p): p for p in hotspot_paths}
+                extra_futures = {pool.submit(fetch_file_content, owner, repo_name, ref, p): p for p in matched_paths}
+
+                for future, path in hotspot_futures.items():
+                    result = future.result()
+                    if "content" in result:
+                        hotspot_files.append({"file": path, "content": result["content"], "reasons": hotspot_reasons.get(path, "")})
+
+                for future, path in extra_futures.items():
+                    result = future.result()
+                    if "content" in result:
+                        extra_files.append({"file": path, "content": result["content"]})
+
+        context = {
+            "full_name": m.get("full_name", analysis.project_name),
+            "description": m.get("description", ""),
+            "languages": m.get("languages", {}),
+            "composite_score": m.get("composite_score"),
+            "quality_summary": quality.get("summary", ""),
+            "top_security_findings": [
+                {"title": f.get("title"), "severity": f.get("severity"), "file": f.get("file")}
+                for f in (security.get("findings") or [])[:10]
+            ],
+            "file_paths": file_paths,
+            "hotspot_files": hotspot_files,
+            "extra_files": extra_files,
+        }
+
+        from agents.gemini_agent import GeminiAgent
+        agent = GeminiAgent()
+        if not agent.enabled:
+            return Response(
+                {"error": "AI chat isn't available — GEMINI_API_KEY isn't configured on the server."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        result = agent.chat(context, history, message)
+        if result.get("error") and not result.get("reply"):
+            return Response({"error": result["error"]}, status=status.HTTP_502_BAD_GATEWAY)
+        return Response({"reply": result["reply"]})
 
 
 def _get_completed_analysis_or_error(pk):

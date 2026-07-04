@@ -111,6 +111,11 @@ class AnalysisReport:
     dependencies: DependencyResult = field(default_factory=DependencyResult)
     predictions: PredictionsResult = field(default_factory=PredictionsResult)
 
+    # Optional AI-powered review (Gemini). Empty dict if GEMINI_API_KEY
+    # isn't configured or the call failed — frontend should treat an
+    # empty/missing dict as "AI review not available" rather than erroring.
+    ai_review: dict = field(default_factory=dict)
+
     # Composite scores
     composite_score: float = 0.0       # 0–100 weighted aggregate
     composite_grade: str = "F"
@@ -219,6 +224,12 @@ class AnalysisOrchestrator:
         t0 = time.monotonic()
         predictions = self._step_predictions(ctx, arch, quality, security, report)
         logger.warning("TIMING predictions: %.2fs", time.monotonic() - t0)
+
+        # ── Step 6.5: AI review (optional — no-op if no GEMINI_API_KEY) ──
+        self._report_progress("AI Analysis", 82, "Running AI-powered review...")
+        t0 = time.monotonic()
+        ai_review = self._step_ai_review(ctx, quality, security, report)
+        logger.warning("TIMING ai_review: %.2fs", time.monotonic() - t0)
         self._report_progress("Generating Report", 90, "Generating final report...")
 
         # ── Step 7: Assemble ──────────────────────────────────────────
@@ -227,12 +238,56 @@ class AnalysisOrchestrator:
         report.security = security
         report.dependencies = deps
         report.predictions = predictions
+        report.ai_review = ai_review
         report.composite_score, report.composite_grade = self._composite(quality, security, deps, arch, predictions)
         report.duration_seconds = round(time.monotonic() - start, 2)
         logger.warning("TIMING TOTAL: %.2fs", report.duration_seconds)
         self._report_progress("Completed", 100, "Analysis complete.")
 
         return report
+
+    def _step_ai_review(self, ctx: RepoContext, quality: QualityResult,
+                         security: SecurityResult, report: AnalysisReport) -> dict:
+        """
+        Feeds the AI a curated, size-capped context (repo metadata + the
+        top hotspot files quality already identified + top security
+        findings) rather than the raw repo — cheaper, faster, and gives
+        the model exactly what a human reviewer would look at first
+        instead of drowning it in boilerplate. Entirely optional: returns
+        {} immediately if GEMINI_API_KEY isn't configured, and never lets
+        an AI failure take down the rest of the analysis.
+        """
+        try:
+            from agents.gemini_agent import GeminiAgent
+            agent = GeminiAgent()
+            if not agent.enabled:
+                return {}
+
+            hotspot_files = []
+            for h in (quality.hotspots or [])[:5]:
+                try:
+                    full_path = ctx.local_path / h["file"]
+                    content = full_path.read_text(encoding="utf-8", errors="ignore")
+                    hotspot_files.append({"file": h["file"], "content": content, "reasons": h.get("reasons", "")})
+                except Exception:
+                    continue
+
+            context = {
+                "full_name": ctx.full_name,
+                "description": ctx.description,
+                "languages": ctx.languages,
+                "composite_score": report.composite_score,
+                "quality_summary": quality.summary,
+                "top_security_findings": [
+                    {"title": f.title, "severity": f.severity, "file": f.file, "description": f.description}
+                    for f in (security.findings or [])[:10]
+                ],
+                "hotspot_files": hotspot_files,
+            }
+            return agent.review_repository(context)
+        except Exception as exc:
+            report.errors.append(f"AI review failed: {exc}")
+            return {}
 
     def _timed_step(self, name: str, fn, *args):
         t0 = time.monotonic()

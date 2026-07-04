@@ -10,6 +10,7 @@ import ArchitectureGraphTab from './analysis/ArchitectureGraphTab';
 import FileFlowChart from './analysis/FileFlowChart';
 import DependenciesTab   from './analysis/DependenciesTab';
 import RecommendationsTab from './analysis/RecommendationsTab';
+import AIChatTab from './analysis/AIChatTab';
 import { isAnalysisInProgress } from '../hooks/useAnalyses';
 import api from '../services/api';
 
@@ -22,6 +23,7 @@ const TABS = [
   { id: 'security',         label: 'Security'        },
   { id: 'dependencies',     label: 'Dependencies'    },
   { id: 'recommendations',  label: 'Recommendations' },
+  { id: 'ai-chat',          label: 'AI Chat'         },
 ];
 
 export default function AnalysisCard({ analysis, onDelete, onRescanned, toast }) {
@@ -383,6 +385,9 @@ export default function AnalysisCard({ analysis, onDelete, onRescanned, toast })
             {activeTab === 'recommendations' && (
               <RecommendationsTab predictions={m.predictions} quality={m.quality}
                                   security={m.security} architecture={m.architecture} />
+            )}
+            {activeTab === 'ai-chat' && (
+              <AIChatTab analysisId={analysis.id} projectName={m.full_name || analysis.project_name} />
             )}
           </div>
         </div>
