@@ -321,17 +321,28 @@ def fetch_file_content(owner: str, repo: str, ref: str, path: str) -> dict[str, 
     """
     Fetch a single file's text content straight from GitHub's raw content
     CDN — no git clone required. This powers the in-app code viewer (the
-    "click a file to view its code" feature) without ever touching the
-    user's disk, keeping repos cloneless for anything short of an actual
-    ZIP download.
+    "click a file to view its code" feature) and the AI chat's file
+    lookups without ever touching the user's disk, keeping repos cloneless
+    for anything short of an actual ZIP download.
 
     Returns {"content": str, "truncated": bool} on success, or
     {"error": str} on failure (not found, binary/too large, network error).
+
+    Successful lookups are cached — the chat feature can fetch the same
+    handful of hotspot files on every message in a conversation, and
+    without caching that's a fresh network round-trip per file per
+    message for content that (especially when `ref` is a commit SHA, which
+    is immutable) never changes.
     """
     ref = ref or "HEAD"
     safe_path = "/".join(seg for seg in path.split("/") if seg not in ("..", ""))
     if not safe_path:
         return {"error": "Invalid file path."}
+
+    cache_key = f"gh:file_content:{owner}/{repo}:{ref}:{safe_path}"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     url = f"https://raw.githubusercontent.com/{owner}/{repo}/{ref}/{safe_path}"
     try:
@@ -357,7 +368,9 @@ def fetch_file_content(owner: str, repo: str, ref: str, path: str) -> dict[str, 
             return {"error": "This looks like a binary file and can't be displayed as text."}
 
         text = raw.decode("utf-8", errors="replace")
-        return {"content": text, "truncated": truncated, "size": total}
+        result = {"content": text, "truncated": truncated, "size": total}
+        cache.set(cache_key, result, REPO_METADATA_CACHE_TTL)
+        return result
     except requests.exceptions.RequestException as exc:
         logger.warning("fetch_file_content.error", extra={"owner": owner, "repo": repo, "path": path, "error": str(exc)})
         return {"error": "Could not fetch this file from GitHub."}
@@ -614,11 +627,20 @@ class GitHubClient:
             resp = _session.get(
                 f"{GITHUB_API_BASE}/repos/{self.owner}/{self.repo_name}/tarball/{ref}",
                 headers=headers,
-                timeout=(10, 60),  # (connect, read) — fail fast instead of hanging
+                timeout=(10, 120),  # (connect, read) — bumped for large repo downloads
                 stream=True,
             )
             resp.raise_for_status()
 
+            # NOTE: a streaming-extraction variant (reading straight from
+            # resp.raw with tarfile mode "r|gz") was tried here to overlap
+            # download and extraction, but it hung indefinitely on a real
+            # large-repo download in practice — likely a urllib3/Windows
+            # socket interaction with reading a raw stream inside a
+            # sequential tarfile reader. Reliability matters more than the
+            # marginal speed gain, so this goes back to fully downloading
+            # into memory first, then extracting — the same approach that
+            # was already proven to work correctly across every test so far.
             with tarfile.open(fileobj=io.BytesIO(resp.content), mode="r:gz") as tar:
                 members = tar.getmembers()
                 if not members:
@@ -652,6 +674,15 @@ class GitHubClient:
                     if member.isdir():
                         target.mkdir(parents=True, exist_ok=True)
                     elif member.isfile():
+                        # No analyzer service reads binary assets (images,
+                        # fonts, archives, compiled objects, media) — the
+                        # code viewer fetches individual files straight
+                        # from GitHub's raw CDN, not this local clone, so
+                        # skipping these here doesn't break anything. On
+                        # repos with sizeable binary assets this avoids a
+                        # meaningful chunk of pure-waste disk writes.
+                        if Path(rel).suffix.lower() in self._SKIP_EXTRACT_EXTENSIONS:
+                            continue
                         target.parent.mkdir(parents=True, exist_ok=True)
                         extracted = tar.extractfile(member)
                         if extracted is None:
@@ -688,6 +719,18 @@ class GitHubClient:
         # architecture/quality/security/dependency analysis run against.
         "vendor", "bower_components", "target", "coverage",
         ".next", ".nuxt", ".cache", ".idea", ".vscode",
+    }
+
+    # Binary/media files no analyzer service ever reads. Extracting these
+    # is pure wasted disk I/O on repos with sizeable image/font/archive
+    # assets — skip writing them at all.
+    _SKIP_EXTRACT_EXTENSIONS = {
+        ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico", ".svgz",
+        ".woff", ".woff2", ".ttf", ".otf", ".eot",
+        ".zip", ".tar", ".gz", ".7z", ".rar", ".bz2", ".xz",
+        ".mp3", ".mp4", ".mov", ".avi", ".webm", ".wav", ".flac",
+        ".pdf", ".exe", ".dll", ".so", ".dylib", ".bin", ".class", ".jar",
+        ".pyc", ".pyo", ".o", ".a", ".wasm",
     }
 
     def _walk_repo(self) -> None:

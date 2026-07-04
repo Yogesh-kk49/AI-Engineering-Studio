@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useRef } from 'react';
 import CodeViewerModal from './CodeViewerModal';
 
 // Box-and-arrow flowchart of the repo's folder/file structure — distinct
@@ -101,6 +101,68 @@ export default function FileFlowChart({ fileTree, analysisId }) {
   const [rootChoice, setRootChoice] = useState(-1); // -1 = whole repo, else index into top-level folders
   const [expandedPaths, setExpandedPaths] = useState(() => new Set());
   const [openFile, setOpenFile] = useState(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [zoom, setZoom] = useState(1);
+  const scrollRef = useRef(null);
+  const dragStateRef = useRef({ dragging: false, startX: 0, startY: 0, scrollLeft: 0, scrollTop: 0 });
+  const [isDragging, setIsDragging] = useState(false);
+
+  const toggleFullscreen = () => {
+    setZoom(1);
+    setIsFullscreen(f => !f);
+  };
+
+  const zoomIn  = () => setZoom(z => Math.min(2.5, +(z + 0.2).toFixed(2)));
+  const zoomOut = () => setZoom(z => Math.max(0.3, +(z - 0.2).toFixed(2)));
+  const zoomReset = () => setZoom(1);
+
+  // Click-and-drag panning, fullscreen only — grabs the scroll container
+  // itself rather than moving the SVG, so it stays in sync with the
+  // browser's native scrollbars/trackpad scrolling for free.
+  const handleMouseDown = (e) => {
+    if (!isFullscreen) return;
+    // Left mouse button only, and not on an interactive box/button —
+    // those still need a normal click to fire (open file, expand "more").
+    if (e.button !== 0 || e.target.closest('button, select')) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    dragStateRef.current = {
+      dragging: true, startX: e.clientX, startY: e.clientY,
+      scrollLeft: el.scrollLeft, scrollTop: el.scrollTop,
+    };
+    setIsDragging(true);
+  };
+
+  React.useEffect(() => {
+    const onMouseMove = (e) => {
+      const ds = dragStateRef.current;
+      if (!ds.dragging) return;
+      const el = scrollRef.current;
+      if (!el) return;
+      el.scrollLeft = ds.scrollLeft - (e.clientX - ds.startX);
+      el.scrollTop = ds.scrollTop - (e.clientY - ds.startY);
+    };
+    const onMouseUp = () => {
+      if (dragStateRef.current.dragging) {
+        dragStateRef.current.dragging = false;
+        setIsDragging(false);
+      }
+    };
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+    };
+  }, []);
+
+  // Esc closes fullscreen mode, same as any modal/overlay in the app.
+  React.useEffect(() => {
+    if (!isFullscreen) return;
+    const onKeyDown = (e) => { if (e.key === 'Escape') setIsFullscreen(false); };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isFullscreen]);
 
   const topDirs = useMemo(
     () => (fileTree?.children || []).filter(c => c.type === 'dir'),
@@ -159,29 +221,122 @@ export default function FileFlowChart({ fileTree, analysisId }) {
           </div>
         </div>
 
-        {topDirs.length > 0 && (
-          <select
-            value={rootChoice}
-            onChange={e => { setRootChoice(Number(e.target.value)); setExpandedPaths(new Set()); }}
-            style={{ fontSize: 12, padding: '6px 10px', borderRadius: 8,
-                     border: '1px solid var(--border)', background: 'var(--bg-input)',
-                     color: 'var(--text-strong)', flexShrink: 0 }}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+          {topDirs.length > 0 && (
+            <select
+              value={rootChoice}
+              onChange={e => { setRootChoice(Number(e.target.value)); setExpandedPaths(new Set()); }}
+              style={{ fontSize: 12, padding: '6px 10px', borderRadius: 8,
+                       border: '1px solid var(--border)', background: 'var(--bg-input)',
+                       color: 'var(--text-strong)', flexShrink: 0 }}
+            >
+              <option value={-1}>Whole repository</option>
+              {topDirs.map((d, i) => (
+                <option key={d.name} value={i}>{d.name}/</option>
+              ))}
+            </select>
+          )}
+
+          <button
+            onClick={toggleFullscreen}
+            title={isFullscreen ? 'Exit full screen' : 'View full screen'}
+            style={{ width: 30, height: 30, borderRadius: 8, background: 'var(--bg-input)',
+                     border: '1px solid var(--border)', color: 'var(--text-muted)',
+                     display: 'flex', alignItems: 'center', justifyContent: 'center',
+                     cursor: 'pointer', flexShrink: 0, transition: 'var(--transition)' }}
+            onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.color = 'var(--accent)'; }}
+            onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--text-muted)'; }}
           >
-            <option value={-1}>Whole repository</option>
-            {topDirs.map((d, i) => (
-              <option key={d.name} value={i}>{d.name}/</option>
-            ))}
-          </select>
-        )}
+            {isFullscreen ? (
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M8 3v3a2 2 0 01-2 2H3M21 8h-3a2 2 0 01-2-2V3M3 16h3a2 2 0 012 2v3M16 21v-3a2 2 0 012-2h3" />
+              </svg>
+            ) : (
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M8 3H5a2 2 0 00-2 2v3M21 8V5a2 2 0 00-2-2h-3M3 16v3a2 2 0 002 2h3M16 21h3a2 2 0 002-2v-3" />
+              </svg>
+            )}
+          </button>
+        </div>
       </div>
 
-      <div style={{ background: '#f8f9fb', border: '1px solid var(--border)',
-                    borderRadius: 12, padding: 16, overflowX: 'auto' }}>
+      <div
+        ref={scrollRef}
+        onMouseDown={handleMouseDown}
+        style={{
+          background: '#f8f9fb', border: '1px solid var(--border)',
+          borderRadius: 12, padding: 16, overflow: 'auto',
+          cursor: isFullscreen ? (isDragging ? 'grabbing' : 'grab') : 'default',
+          userSelect: isDragging ? 'none' : 'auto',
+          ...(isFullscreen ? {
+            position: 'fixed', inset: 16, zIndex: 1000, boxShadow: 'var(--shadow-elevated)',
+          } : { overflowX: 'auto' }),
+        }}
+      >
+        {isFullscreen && (
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                        marginBottom: 12, position: 'sticky', top: 0, background: '#f8f9fb', zIndex: 1 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-strong)' }}>
+              File Flow Chart
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <div style={{ display: 'flex', alignItems: 'center', border: '1px solid var(--border)',
+                            borderRadius: 8, overflow: 'hidden', background: 'var(--bg-input)' }}>
+                <button
+                  onClick={zoomOut}
+                  title="Zoom out"
+                  style={{ width: 30, height: 30, background: 'none', border: 'none',
+                           color: 'var(--text-muted)', cursor: 'pointer', fontSize: 16, lineHeight: 1 }}
+                  onMouseEnter={e => { e.currentTarget.style.color = 'var(--accent)'; }}
+                  onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-muted)'; }}
+                >
+                  −
+                </button>
+                <button
+                  onClick={zoomReset}
+                  title="Reset zoom"
+                  style={{ minWidth: 46, height: 30, background: 'none', border: 'none',
+                           borderLeft: '1px solid var(--border)', borderRight: '1px solid var(--border)',
+                           color: 'var(--text-strong)', cursor: 'pointer', fontSize: 11.5, fontWeight: 600 }}
+                >
+                  {Math.round(zoom * 100)}%
+                </button>
+                <button
+                  onClick={zoomIn}
+                  title="Zoom in"
+                  style={{ width: 30, height: 30, background: 'none', border: 'none',
+                           color: 'var(--text-muted)', cursor: 'pointer', fontSize: 16, lineHeight: 1 }}
+                  onMouseEnter={e => { e.currentTarget.style.color = 'var(--accent)'; }}
+                  onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-muted)'; }}
+                >
+                  +
+                </button>
+              </div>
+
+              <button
+                onClick={() => setIsFullscreen(false)}
+                title="Close full screen (Esc)"
+                style={{ width: 30, height: 30, borderRadius: 8, background: 'var(--bg-input)',
+                         border: '1px solid var(--border)', color: 'var(--text-muted)',
+                         display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
+                onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--grade-f)'; e.currentTarget.style.color = 'var(--grade-f)'; }}
+                onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--text-muted)'; }}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </div>
+          </div>
+        )}
+
         <svg
-          width={totalWidth + PAD * 2}
-          height={totalHeight + PAD * 2}
+          width={(totalWidth + PAD * 2) * (isFullscreen ? zoom : 1)}
+          height={(totalHeight + PAD * 2) * (isFullscreen ? zoom : 1)}
           viewBox={`${-PAD} ${-PAD} ${totalWidth + PAD * 2} ${totalHeight + PAD * 2}`}
-          style={{ display: 'block', minWidth: Math.min(totalWidth + PAD * 2, 1400) }}
+          style={{ display: 'block',
+                   minWidth: isFullscreen ? undefined : Math.min(totalWidth + PAD * 2, 1400) }}
         >
           {/* Connector lines, drawn first so boxes sit on top */}
           {edges.map((e, i) => {
@@ -222,6 +377,13 @@ export default function FileFlowChart({ fileTree, analysisId }) {
           })}
         </svg>
       </div>
+
+      {isFullscreen && (
+        <div
+          onClick={() => setIsFullscreen(false)}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(15,18,25,0.55)', zIndex: 999 }}
+        />
+      )}
 
       {openFile && (
         <CodeViewerModal analysisId={analysisId} path={openFile} onClose={() => setOpenFile(null)} />

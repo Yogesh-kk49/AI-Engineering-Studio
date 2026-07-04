@@ -23,15 +23,21 @@ const TABS = [
   { id: 'security',         label: 'Security'        },
   { id: 'dependencies',     label: 'Dependencies'    },
   { id: 'recommendations',  label: 'Recommendations' },
-  { id: 'ai-chat',          label: 'AI Chat'         },
+  { id: 'chat',             label: '✦ AI Chat'       },
 ];
 
 export default function AnalysisCard({ analysis, onDelete, onRescanned, toast }) {
   const [open, setOpen]           = useState(false);
   const [activeTab, setActiveTab] = useState('overview');
   const [downloading, setDownloading] = useState(false);
+  const [downloadSlow, setDownloadSlow] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState(null); // 0-100, or null while size is still unknown
+  const downloadSlowTimerRef = useRef(null);
   const [exporting, setExporting] = useState(null);   // 'markdown' | 'pdf' | null
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
+  const [exportMenuPos, setExportMenuPos] = useState(null);
+  const exportBtnRef = useRef(null);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [rescanning, setRescanning] = useState(false);
   const rescanLockRef = useRef(false); // synchronous guard — state updates aren't fast enough to stop a double-click
   const rescanAbortRef = useRef(null); // lets the Pause button cancel the in-flight rescan request
@@ -41,17 +47,51 @@ export default function AnalysisCard({ analysis, onDelete, onRescanned, toast })
 
   const handleDelete = (e) => {
     e.stopPropagation();
-    if (window.confirm(`Delete analysis for "${analysis.project_name}"?`)) {
-      onDelete?.(analysis.id);
+    setDeleteConfirmOpen(true);
+  };
+
+  const confirmDelete = () => {
+    setDeleteConfirmOpen(false);
+    onDelete?.(analysis.id);
+  };
+
+  const toggleExportMenu = (e) => {
+    e.stopPropagation();
+    if (exportMenuOpen) {
+      setExportMenuOpen(false);
+      return;
     }
+    const rect = exportBtnRef.current?.getBoundingClientRect();
+    if (rect) {
+      setExportMenuPos({ top: rect.bottom + 6, right: window.innerWidth - rect.right });
+    }
+    setExportMenuOpen(true);
   };
 
   const handleDownload = async (e) => {
     e.stopPropagation();
     if (downloading) return;
     setDownloading(true);
+    setDownloadProgress(null);
+    // The backend has to clone/refresh the repo and zip it before the
+    // response starts streaming, so large repos can take a while with no
+    // visible progress. After 8s, swap the tooltip/spinner to say so
+    // explicitly rather than leaving it looking frozen.
+    downloadSlowTimerRef.current = setTimeout(() => setDownloadSlow(true), 8000);
     try {
-      const res = await api.get(`analysis/${analysis.id}/download/`, { responseType: 'blob' });
+      const res = await api.get(`analysis/${analysis.id}/download/`, {
+        responseType: 'blob',
+        onDownloadProgress: (progressEvent) => {
+          // total is only known when the server sends a Content-Length
+          // header — GitHub's zipball response usually does, but if it's
+          // ever missing (chunked/compressed transfer), fall back to
+          // showing an indeterminate spinner instead of a stuck 0%.
+          if (progressEvent.total) {
+            setDownloadSlow(false); // real progress beats the "still fetching" message
+            setDownloadProgress(Math.round((progressEvent.loaded / progressEvent.total) * 100));
+          }
+        },
+      });
       const url = window.URL.createObjectURL(new Blob([res.data]));
       const a = document.createElement('a');
       a.href = url;
@@ -60,9 +100,16 @@ export default function AnalysisCard({ analysis, onDelete, onRescanned, toast })
       a.click();
       a.remove();
       window.URL.revokeObjectURL(url);
-    } catch {
-      window.alert('Could not download this repository — the cloned files may no longer be on the server.');
+    } catch (err) {
+      if (err?.code === 'ECONNABORTED') {
+        window.alert('The download timed out — this repository may be too large to fetch fresh each time.');
+      } else {
+        window.alert('Could not download this repository — the cloned files may no longer be on the server.');
+      }
     } finally {
+      clearTimeout(downloadSlowTimerRef.current);
+      setDownloadSlow(false);
+      setDownloadProgress(null);
       setDownloading(false);
     }
   };
@@ -167,10 +214,25 @@ export default function AnalysisCard({ analysis, onDelete, onRescanned, toast })
         {/* Name + meta */}
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-            <a href={analysis.repo_url} target="_blank" rel="noreferrer"
-               onClick={e => e.stopPropagation()}
-               style={{ fontWeight: 700, fontSize: 15, color: 'var(--text-heading)' }}>
+            <span style={{ fontWeight: 700, fontSize: 15, color: 'var(--text-heading)' }}>
               {analysis.project_name}
+            </span>
+            <a
+              href={analysis.repo_url}
+              target="_blank"
+              rel="noreferrer"
+              title="Open on GitHub"
+              onClick={e => e.stopPropagation()}
+              style={{ width: 20, height: 20, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                       color: 'var(--text-muted)', borderRadius: 4, transition: 'var(--transition)' }}
+              onMouseEnter={e => { e.currentTarget.style.color = 'var(--accent)'; }}
+              onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-muted)'; }}
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6" />
+                <polyline points="15 3 21 3 21 9" />
+                <line x1="10" y1="14" x2="21" y2="3" />
+              </svg>
             </a>
             <StatusBadge status={analysis.status} />
           </div>
@@ -206,7 +268,8 @@ export default function AnalysisCard({ analysis, onDelete, onRescanned, toast })
           {!isPending && !isFailed && (
             <div style={{ position: 'relative' }}>
               <button
-                onClick={() => setExportMenuOpen(o => !o)}
+                ref={exportBtnRef}
+                onClick={toggleExportMenu}
                 disabled={!!exporting}
                 title="Export report"
                 style={{ width: 30, height: 30, borderRadius: 6, background: 'transparent',
@@ -231,13 +294,13 @@ export default function AnalysisCard({ analysis, onDelete, onRescanned, toast })
                 )}
               </button>
 
-              {exportMenuOpen && (
+              {exportMenuOpen && exportMenuPos && (
                 <>
                   <div onClick={() => setExportMenuOpen(false)}
-                       style={{ position: 'fixed', inset: 0, zIndex: 10 }} />
-                  <div style={{ position: 'absolute', top: 36, right: 0, zIndex: 11,
+                       style={{ position: 'fixed', inset: 0, zIndex: 1000 }} />
+                  <div style={{ position: 'fixed', top: exportMenuPos.top, right: exportMenuPos.right, zIndex: 1001,
                                 background: 'var(--bg-card)', border: '1px solid var(--border)',
-                                borderRadius: 8, boxShadow: '0 4px 16px rgba(0,0,0,0.12)',
+                                borderRadius: 8, boxShadow: '0 8px 24px rgba(15,23,42,0.16)',
                                 minWidth: 160, overflow: 'hidden' }}>
                     <button
                       onClick={e => handleExport(e, 'markdown')}
@@ -296,30 +359,62 @@ export default function AnalysisCard({ analysis, onDelete, onRescanned, toast })
           )}
 
           {!isPending && !isFailed && (
-            <button
-              onClick={handleDownload}
-              disabled={downloading}
-              title="Download repository as ZIP"
-              style={{ width: 30, height: 30, borderRadius: 6, background: 'transparent',
-                border: '1px solid var(--border)', color: 'var(--text-muted)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                cursor: downloading ? 'wait' : 'pointer', transition: 'var(--transition)' }}
-              onMouseEnter={e => { if (!downloading) { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.color = 'var(--accent)'; } }}
-              onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)';  e.currentTarget.style.color = 'var(--text-muted)'; }}
-            >
-              {downloading ? (
-                <span style={{ width: 13, height: 13, border: '2px solid rgba(79,126,248,0.25)',
-                               borderTopColor: 'var(--accent)', borderRadius: '50%',
-                               animation: 'spin 0.7s linear infinite', display: 'block' }} />
-              ) : (
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
-                     stroke="currentColor" strokeWidth="2">
-                  <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
-                  <polyline points="7 10 12 15 17 10"/>
-                  <line x1="12" y1="15" x2="12" y2="3"/>
-                </svg>
+            <div style={{ position: 'relative' }}>
+              <button
+                onClick={handleDownload}
+                disabled={downloading}
+                title={
+                  downloadProgress != null ? `Downloading — ${downloadProgress}%`
+                  : downloadSlow ? 'Still fetching the repository — large repos can take a minute'
+                  : 'Download repository as ZIP'
+                }
+                style={{ width: 30, height: 30, borderRadius: 6, background: 'transparent',
+                  border: '1px solid var(--border)', color: 'var(--text-muted)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  cursor: downloading ? 'wait' : 'pointer', transition: 'var(--transition)' }}
+                onMouseEnter={e => { if (!downloading) { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.color = 'var(--accent)'; } }}
+                onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)';  e.currentTarget.style.color = 'var(--text-muted)'; }}
+              >
+                {downloading ? (
+                  downloadProgress != null ? (
+                    // Determinate ring — fills clockwise as real bytes arrive,
+                    // instead of a spinner that never actually tells you how
+                    // much longer this is going to take.
+                    <div style={{
+                      width: 16, height: 16, borderRadius: '50%', flexShrink: 0,
+                      background: `conic-gradient(var(--accent) ${downloadProgress * 3.6}deg, rgba(79,126,248,0.18) 0deg)`,
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      transition: 'background 0.15s linear',
+                    }}>
+                      <div style={{ width: 10, height: 10, borderRadius: '50%', background: 'var(--bg-card)' }} />
+                    </div>
+                  ) : (
+                    <span style={{ width: 13, height: 13, border: '2px solid rgba(79,126,248,0.25)',
+                                   borderTopColor: 'var(--accent)', borderRadius: '50%',
+                                   animation: 'spin 0.7s linear infinite', display: 'block' }} />
+                  )
+                ) : (
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+                       stroke="currentColor" strokeWidth="2">
+                    <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                    <polyline points="7 10 12 15 17 10"/>
+                    <line x1="12" y1="15" x2="12" y2="3"/>
+                  </svg>
+                )}
+              </button>
+
+              {downloading && (
+                <div style={{
+                  position: 'absolute', top: -22, right: 0, zIndex: 5,
+                  fontSize: 10, fontWeight: 700, color: 'var(--accent)',
+                  background: 'var(--bg-card)', border: '1px solid var(--border)',
+                  padding: '1px 6px', borderRadius: 6, whiteSpace: 'nowrap',
+                  boxShadow: '0 1px 4px rgba(0,0,0,0.08)',
+                }}>
+                  {downloadProgress != null ? `${downloadProgress}%` : 'Fetching…'}
+                </div>
               )}
-            </button>
+            </div>
           )}
 
           <button
@@ -341,14 +436,22 @@ export default function AnalysisCard({ analysis, onDelete, onRescanned, toast })
           </button>
 
           {!isPending && (
-            <div style={{ width: 28, height: 28, display: 'flex', alignItems: 'center',
-                          justifyContent: 'center', color: 'var(--text-muted)' }}>
+            <button
+              onClick={() => setOpen(o => !o)}
+              title={open ? 'Collapse' : 'Expand'}
+              style={{ width: 28, height: 28, borderRadius: 6, background: 'transparent',
+                       border: '1px solid transparent', display: 'flex', alignItems: 'center',
+                       justifyContent: 'center', color: 'var(--text-muted)', cursor: 'pointer',
+                       transition: 'var(--transition)' }}
+              onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-card-hover)'; e.currentTarget.style.color = 'var(--accent)'; }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-muted)'; }}
+            >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
                    stroke="currentColor" strokeWidth="2"
                    style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }}>
                 <polyline points="6 9 12 15 18 9" />
               </svg>
-            </div>
+            </button>
           )}
         </div>
       </div>
@@ -386,11 +489,66 @@ export default function AnalysisCard({ analysis, onDelete, onRescanned, toast })
               <RecommendationsTab predictions={m.predictions} quality={m.quality}
                                   security={m.security} architecture={m.architecture} />
             )}
-            {activeTab === 'ai-chat' && (
-              <AIChatTab analysisId={analysis.id} projectName={m.full_name || analysis.project_name} />
+            {activeTab === 'chat' && (
+              <AIChatTab analysisId={analysis.id} projectName={analysis.project_name} />
             )}
           </div>
         </div>
+      )}
+
+      {deleteConfirmOpen && (
+        <>
+          <div
+            onClick={() => setDeleteConfirmOpen(false)}
+            style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(15,18,25,0.5)' }}
+          />
+          <div style={{
+            position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
+            zIndex: 1001, width: 380, maxWidth: 'calc(100vw - 32px)',
+            background: 'var(--bg-card)', borderRadius: 12, border: '1px solid var(--border)',
+            boxShadow: '0 12px 40px rgba(15,23,42,0.22)', padding: 24,
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}>
+              <div style={{ width: 36, height: 36, borderRadius: 10, background: 'rgba(239,68,68,0.1)',
+                            display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="var(--grade-f)" strokeWidth="2">
+                  <polyline points="3 6 5 6 21 6"/>
+                  <path d="M19 6l-1 14H6L5 6"/>
+                  <path d="M10 11v6M14 11v6"/>
+                </svg>
+              </div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-heading)' }}>
+                Delete this analysis?
+              </div>
+            </div>
+            <p style={{ fontSize: 13.5, color: 'var(--text)', lineHeight: 1.5, margin: '0 0 20px' }}>
+              This permanently removes the analysis for <strong>{analysis.project_name}</strong>,
+              including its report, scores, and findings. This can't be undone.
+            </p>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+              <button
+                onClick={() => setDeleteConfirmOpen(false)}
+                style={{ padding: '8px 16px', fontSize: 13, fontWeight: 600, borderRadius: 8,
+                         border: '1px solid var(--border)', background: 'transparent',
+                         color: 'var(--text-strong)', cursor: 'pointer', transition: 'var(--transition)' }}
+                onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-card-hover)'; }}
+                onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmDelete}
+                style={{ padding: '8px 16px', fontSize: 13, fontWeight: 600, borderRadius: 8,
+                         border: 'none', background: 'var(--grade-f)', color: '#fff',
+                         cursor: 'pointer', transition: 'var(--transition)' }}
+                onMouseEnter={e => { e.currentTarget.style.opacity = 0.9; }}
+                onMouseLeave={e => { e.currentTarget.style.opacity = 1; }}
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </>
       )}
     </div>
   );

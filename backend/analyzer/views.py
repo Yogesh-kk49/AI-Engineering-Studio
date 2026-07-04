@@ -1,4 +1,5 @@
 import logging
+import time
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
@@ -320,6 +321,7 @@ class RepositoryChatView(APIView):
     MAX_HISTORY_TURNS = 12  # server-side cap regardless of what the client sends
 
     def post(self, request, pk):
+        t_start = time.monotonic()
         analysis, error_response = _get_completed_analysis_or_error(pk)
         if error_response:
             return error_response
@@ -385,8 +387,21 @@ class RepositoryChatView(APIView):
         # avoidable latency to every single message.
         hotspot_files = []
         extra_files = []
+        t_fetch = time.monotonic()
+        is_first_turn = len(history) == 0
         if owner:
-            hotspot_paths = [h.get("file", "").replace("\\", "/") for h in (quality.get("hotspots") or [])[:5] if h.get("file")]
+            # Hotspot files are ~40K characters of context — resending them
+            # on every single follow-up message means every turn after the
+            # first pays for re-fetching AND re-processing that much extra
+            # prompt content, even for something like "thanks" or a
+            # question about a totally different file. The model already
+            # saw them in its own earlier reply (preserved in `history`),
+            # so only load them fresh on the first message of a
+            # conversation; later turns only fetch files newly mentioned.
+            hotspot_paths = (
+                [h.get("file", "").replace("\\", "/") for h in (quality.get("hotspots") or [])[:5] if h.get("file")]
+                if is_first_turn else []
+            )
             hotspot_reasons = {h.get("file", "").replace("\\", "/"): h.get("reasons", "") for h in (quality.get("hotspots") or [])}
             matched_paths = [p for p in candidate_paths if _mentioned(p)][:5]
 
@@ -403,6 +418,9 @@ class RepositoryChatView(APIView):
                     result = future.result()
                     if "content" in result:
                         extra_files.append({"file": path, "content": result["content"]})
+
+        logger.warning("TIMING chat.file_fetch: %.2fs (hotspot=%d, extra=%d, first_turn=%s)",
+                       time.monotonic() - t_fetch, len(hotspot_files), len(extra_files), is_first_turn)
 
         context = {
             "full_name": m.get("full_name", analysis.project_name),
@@ -427,7 +445,11 @@ class RepositoryChatView(APIView):
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
+        t_gemini = time.monotonic()
         result = agent.chat(context, history, message)
+        logger.warning("TIMING chat.gemini_call: %.2fs", time.monotonic() - t_gemini)
+        logger.warning("TIMING chat.TOTAL: %.2fs", time.monotonic() - t_start)
+
         if result.get("error") and not result.get("reply"):
             return Response({"error": result["error"]}, status=status.HTTP_502_BAD_GATEWAY)
         return Response({"reply": result["reply"]})
