@@ -5,7 +5,7 @@ import { dash, formatNumber, timeAgo } from '../../utils/helpers';
 
 function StatCard({ label, value, icon }) {
   return (
-    <div style={{ background: '#f8f9fb', border: '1px solid var(--border)',
+    <div style={{ background: 'var(--bg-subtle)', border: '1px solid var(--border)',
                   borderRadius: 10, padding: '14px 16px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
         <div>
@@ -50,7 +50,7 @@ export default function OverviewTab({ analysis }) {
       {/* Creator / owner */}
       {(m.owner_login || m.creator) && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 12,
-                      background: '#f8f9fb', border: '1px solid var(--border)',
+                      background: 'var(--bg-subtle)', border: '1px solid var(--border)',
                       borderRadius: 10, padding: '12px 16px' }}>
           {m.owner_avatar_url ? (
             <img src={m.owner_avatar_url} alt={m.owner_login || m.creator}

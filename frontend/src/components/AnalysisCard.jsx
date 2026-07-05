@@ -14,8 +14,10 @@ import AIChatTab from './analysis/AIChatTab';
 import { isAnalysisInProgress } from '../hooks/useAnalyses';
 import api from '../services/api';
 
+// AI Chat now sits right after Overview, per request.
 const TABS = [
   { id: 'overview',         label: 'Overview'        },
+  { id: 'chat',             label: '✦ AI Chat'       },
   { id: 'health',           label: 'Health Score'    },
   { id: 'architecture',     label: 'Architecture'    },
   { id: 'structure',        label: 'Project Structure' },
@@ -23,7 +25,6 @@ const TABS = [
   { id: 'security',         label: 'Security'        },
   { id: 'dependencies',     label: 'Dependencies'    },
   { id: 'recommendations',  label: 'Recommendations' },
-  { id: 'chat',             label: '✦ AI Chat'       },
 ];
 
 export default function AnalysisCard({ analysis, onDelete, onRescanned, toast }) {
@@ -39,6 +40,14 @@ export default function AnalysisCard({ analysis, onDelete, onRescanned, toast })
   const exportBtnRef = useRef(null);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [rescanning, setRescanning] = useState(false);
+  // Rescanning has no bytes to measure (it's a single JSON response, not a
+  // file stream), so there's no real percentage to report the way the
+  // download has. Instead we simulate a Chrome/YouTube-upload-style ring:
+  // climb quickly, ease off near the top, and only snap to 100% once the
+  // real response actually lands — so it never looks frozen, and it never
+  // lies by claiming to be done before the server says so.
+  const [rescanProgress, setRescanProgress] = useState(0);
+  const rescanProgressTimerRef = useRef(null);
   const rescanLockRef = useRef(false); // synchronous guard — state updates aren't fast enough to stop a double-click
   const rescanAbortRef = useRef(null); // lets the Pause button cancel the in-flight rescan request
   const m         = analysis.metadata || {};
@@ -114,11 +123,34 @@ export default function AnalysisCard({ analysis, onDelete, onRescanned, toast })
     }
   };
 
+  const startRescanProgressSim = () => {
+    setRescanProgress(4);
+    clearInterval(rescanProgressTimerRef.current);
+    rescanProgressTimerRef.current = setInterval(() => {
+      setRescanProgress(p => {
+        if (p >= 90) return p; // hold just short of full until the real result arrives
+        const remaining = 90 - p;
+        return Math.min(90, p + Math.max(0.6, remaining * 0.07));
+      });
+    }, 180);
+  };
+
+  const stopRescanProgressSim = (success) => {
+    clearInterval(rescanProgressTimerRef.current);
+    if (success) {
+      setRescanProgress(100);
+      setTimeout(() => setRescanProgress(0), 500);
+    } else {
+      setRescanProgress(0);
+    }
+  };
+
   const handleRescan = async (e) => {
     e.stopPropagation();
     if (rescanLockRef.current) return;
     rescanLockRef.current = true;
     setRescanning(true);
+    startRescanProgressSim();
 
     const controller = new AbortController();
     rescanAbortRef.current = controller;
@@ -134,8 +166,10 @@ export default function AnalysisCard({ analysis, onDelete, onRescanned, toast })
         repo_url: analysis.repo_url,
         branch: analysis.branch || '',
       }, { signal: controller.signal });
+      stopRescanProgressSim(true);
       await onRescanned?.(res.data.data, analysis.id, !!res.data.cached);
     } catch (err) {
+      stopRescanProgressSim(false);
       if (err?.code === 'ERR_CANCELED' || err?.name === 'CanceledError') {
         // User-initiated pause — the backend already created the analysis
         // row and queued the job before we aborted, so it keeps running
@@ -307,7 +341,7 @@ export default function AnalysisCard({ analysis, onDelete, onRescanned, toast })
                       style={{ width: '100%', textAlign: 'left', padding: '9px 12px',
                                fontSize: 12.5, background: 'none', border: 'none',
                                color: 'var(--text)', cursor: 'pointer', display: 'block' }}
-                      onMouseEnter={e => { e.currentTarget.style.background = '#f3f4f6'; }}
+                      onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-card-hover)'; }}
                       onMouseLeave={e => { e.currentTarget.style.background = 'none'; }}
                     >
                       📝 Export as Markdown
@@ -318,7 +352,7 @@ export default function AnalysisCard({ analysis, onDelete, onRescanned, toast })
                                fontSize: 12.5, background: 'none', border: 'none',
                                color: 'var(--text)', cursor: 'pointer', display: 'block',
                                borderTop: '1px solid var(--border)' }}
-                      onMouseEnter={e => { e.currentTarget.style.background = '#f3f4f6'; }}
+                      onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-card-hover)'; }}
                       onMouseLeave={e => { e.currentTarget.style.background = 'none'; }}
                     >
                       📄 Export as PDF
@@ -330,32 +364,60 @@ export default function AnalysisCard({ analysis, onDelete, onRescanned, toast })
           )}
 
           {!isPending && (
-            <button
-              onClick={rescanning ? handlePauseRescan : handleRescan}
-              title={rescanning ? 'Pause rescan' : 'Check for updates (instant if nothing changed)'}
-              style={{ width: 30, height: 30, borderRadius: 6, background: 'transparent',
-                border: `1px solid ${rescanning ? 'var(--accent)' : 'var(--border)'}`,
-                color: rescanning ? 'var(--accent)' : 'var(--text-muted)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                cursor: 'pointer', transition: 'var(--transition)' }}
-              onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.color = 'var(--accent)'; }}
-              onMouseLeave={e => { e.currentTarget.style.borderColor = rescanning ? 'var(--accent)' : 'var(--border)'; e.currentTarget.style.color = rescanning ? 'var(--accent)' : 'var(--text-muted)'; }}
-            >
-              {rescanning ? (
-                // Pause icon (two bars) — click to cancel the wait for this rescan
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
-                  <rect x="6" y="4" width="4" height="16" rx="1"/>
-                  <rect x="14" y="4" width="4" height="16" rx="1"/>
-                </svg>
-              ) : (
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
-                     stroke="currentColor" strokeWidth="2">
-                  <polyline points="23 4 23 10 17 10"/>
-                  <polyline points="1 20 1 14 7 14"/>
-                  <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>
-                </svg>
+            <div style={{ position: 'relative' }}>
+              <button
+                onClick={rescanning ? handlePauseRescan : handleRescan}
+                title={
+                  rescanning
+                    ? `Rescanning — ${Math.round(rescanProgress)}% (click to pause)`
+                    : 'Check for updates (instant if nothing changed)'
+                }
+                style={{ width: 30, height: 30, borderRadius: 6, background: 'transparent',
+                  border: `1px solid ${rescanning ? 'var(--accent)' : 'var(--border)'}`,
+                  color: rescanning ? 'var(--accent)' : 'var(--text-muted)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  cursor: 'pointer', transition: 'var(--transition)' }}
+                onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.color = 'var(--accent)'; }}
+                onMouseLeave={e => { e.currentTarget.style.borderColor = rescanning ? 'var(--accent)' : 'var(--border)'; e.currentTarget.style.color = rescanning ? 'var(--accent)' : 'var(--text-muted)'; }}
+              >
+                {rescanning ? (
+                  // Determinate-looking ring (simulated — see comment above
+                  // rescanProgress state) with a tiny pause icon at its center,
+                  // same visual language as the download ring below.
+                  <div style={{
+                    width: 16, height: 16, borderRadius: '50%', flexShrink: 0,
+                    background: `conic-gradient(var(--accent) ${rescanProgress * 3.6}deg, rgba(79,126,248,0.18) 0deg)`,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    transition: 'background 0.15s linear',
+                  }}>
+                    <div style={{ width: 10, height: 10, borderRadius: '50%', background: 'var(--bg-card)',
+                                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1 }}>
+                      <span style={{ width: 1.5, height: 5, background: 'var(--accent)', borderRadius: 1 }} />
+                      <span style={{ width: 1.5, height: 5, background: 'var(--accent)', borderRadius: 1 }} />
+                    </div>
+                  </div>
+                ) : (
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+                       stroke="currentColor" strokeWidth="2">
+                    <polyline points="23 4 23 10 17 10"/>
+                    <polyline points="1 20 1 14 7 14"/>
+                    <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>
+                  </svg>
+                )}
+              </button>
+
+              {rescanning && (
+                <div style={{
+                  position: 'absolute', top: -22, right: 0, zIndex: 5,
+                  fontSize: 10, fontWeight: 700, color: 'var(--accent)',
+                  background: 'var(--bg-card)', border: '1px solid var(--border)',
+                  padding: '1px 6px', borderRadius: 6, whiteSpace: 'nowrap',
+                  boxShadow: '0 1px 4px rgba(0,0,0,0.08)',
+                }}>
+                  {Math.round(rescanProgress)}%
+                </div>
               )}
-            </button>
+            </div>
           )}
 
           {!isPending && !isFailed && (
@@ -461,7 +523,7 @@ export default function AnalysisCard({ analysis, onDelete, onRescanned, toast })
         <div style={{ borderTop: '1px solid var(--border)', animation: 'slideDown 0.2s ease' }}>
           {/* Tab bar */}
           <div style={{ display: 'flex', borderBottom: '1px solid var(--border)',
-                        padding: '0 20px', overflowX: 'auto', background: '#fafbfc' }}>
+                        padding: '0 20px', overflowX: 'auto', background: 'var(--bg-subtle)' }}>
             {TABS.map(tab => (
               <button key={tab.id} onClick={() => setActiveTab(tab.id)} style={{
                 padding: '12px 16px', fontSize: 13, fontWeight: 500,
@@ -479,6 +541,9 @@ export default function AnalysisCard({ analysis, onDelete, onRescanned, toast })
           {/* Tab content */}
           <div style={{ padding: 24, animation: 'fadeIn 0.2s ease', background: 'var(--bg-card)' }}>
             {activeTab === 'overview'        && <OverviewTab analysis={analysis} />}
+            {activeTab === 'chat' && (
+              <AIChatTab analysisId={analysis.id} projectName={analysis.project_name} />
+            )}
             {activeTab === 'health'          && <HealthScore quality={m.quality} />}
             {activeTab === 'architecture'    && <ArchitectureTab architecture={m.architecture} />}
             {activeTab === 'structure'       && <ArchitectureGraphTab fileTree={m.file_tree} analysisId={analysis.id} />}
@@ -488,9 +553,6 @@ export default function AnalysisCard({ analysis, onDelete, onRescanned, toast })
             {activeTab === 'recommendations' && (
               <RecommendationsTab predictions={m.predictions} quality={m.quality}
                                   security={m.security} architecture={m.architecture} />
-            )}
-            {activeTab === 'chat' && (
-              <AIChatTab analysisId={analysis.id} projectName={analysis.project_name} />
             )}
           </div>
         </div>

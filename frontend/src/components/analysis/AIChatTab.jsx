@@ -73,20 +73,29 @@ function Avatar({ role }) {
   );
 }
 
-function TypingDots() {
+function TypingDots({ label }) {
   return (
-    <div style={{ display: 'flex', gap: 4, padding: '4px 2px' }}>
-      {[0, 1, 2].map(i => (
-        <span key={i} style={{
-          width: 6, height: 6, borderRadius: '50%', background: 'var(--text-muted)',
-          animation: `ai-chat-bounce 1.2s ease-in-out ${i * 0.15}s infinite`,
-          display: 'inline-block',
-        }} />
-      ))}
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 2px' }}>
+      <div style={{ display: 'flex', gap: 4 }}>
+        {[0, 1, 2].map(i => (
+          <span key={i} style={{
+            width: 6, height: 6, borderRadius: '50%', background: 'var(--text-muted)',
+            animation: `ai-chat-bounce 1.2s ease-in-out ${i * 0.15}s infinite`,
+            display: 'inline-block',
+          }} />
+        ))}
+      </div>
+      {label && (
+        <span style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>{label}</span>
+      )}
       <style>{`
         @keyframes ai-chat-bounce {
           0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
           30% { transform: translateY(-4px); opacity: 1; }
+        }
+        @keyframes ai-chat-caret-blink {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0; }
         }
       `}</style>
     </div>
@@ -97,17 +106,32 @@ function formatTime(date) {
   return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
+// How fast the reply "types" itself out once it arrives — tuned to feel
+// like a live stream (ChatGPT-style) without dragging out long answers.
+const REVEAL_MS_PER_TICK = 14;
+const REVEAL_CHARS_PER_TICK = 3;
+
 export default function AIChatTab({ analysisId, projectName }) {
-  const [messages, setMessages] = useState([]); // {role, content, at}
+  const [messages, setMessages] = useState([]); // {role, content, at, streaming?}
   const [input, setInput] = useState('');
-  const [sending, setSending] = useState(false);
+  const [sending, setSending] = useState(false);      // waiting on the network request
+  const [streamingId, setStreamingId] = useState(null); // index of message currently being revealed
+  const [waitLabel, setWaitLabel] = useState('Thinking…');
   const [error, setError] = useState(null);
   const scrollRef = useRef(null);
   const textareaRef = useRef(null);
+  const waitTimersRef = useRef([]);
+  const revealIntervalRef = useRef(null);
 
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [messages, sending]);
+
+  useEffect(() => () => {
+    // Clean up any in-flight timers if the tab unmounts mid-response.
+    waitTimersRef.current.forEach(clearTimeout);
+    clearInterval(revealIntervalRef.current);
+  }, []);
 
   const autoResize = useCallback(() => {
     const el = textareaRef.current;
@@ -118,24 +142,76 @@ export default function AIChatTab({ analysisId, projectName }) {
 
   useEffect(() => { autoResize(); }, [input, autoResize]);
 
+  // Reveals `fullText` into the message at `msgIndex` a few characters at a
+  // time, breaking only on whole words so it never looks like it's
+  // stuttering mid-word — the same effect as ChatGPT's token-by-token print.
+  const revealReply = (fullText, msgIndex) => {
+    let shown = 0;
+    revealIntervalRef.current = setInterval(() => {
+      shown = Math.min(fullText.length, shown + REVEAL_CHARS_PER_TICK);
+      // Don't cut off mid-word unless we're at the very end.
+      let cut = shown;
+      if (cut < fullText.length) {
+        while (cut > 0 && !/\s/.test(fullText[cut]) && !/\s/.test(fullText[cut - 1])) cut--;
+        if (cut === 0) cut = shown;
+      }
+      const partial = fullText.slice(0, cut);
+      setMessages(prev => {
+        const copy = [...prev];
+        if (copy[msgIndex]) copy[msgIndex] = { ...copy[msgIndex], content: partial };
+        return copy;
+      });
+      if (shown >= fullText.length) {
+        clearInterval(revealIntervalRef.current);
+        setMessages(prev => {
+          const copy = [...prev];
+          if (copy[msgIndex]) copy[msgIndex] = { ...copy[msgIndex], content: fullText, streaming: false };
+          return copy;
+        });
+        setStreamingId(null);
+      }
+    }, REVEAL_MS_PER_TICK);
+  };
+
   const send = async () => {
     const trimmed = input.trim();
-    if (!trimmed || sending) return;
+    if (!trimmed || sending || streamingId != null) return;
 
     const nextMessages = [...messages, { role: 'user', content: trimmed, at: new Date() }];
     setMessages(nextMessages);
     setInput('');
     setSending(true);
     setError(null);
+    setWaitLabel('Thinking…');
+
+    // Longer waits get an honest, reassuring status update instead of a
+    // dead spinner — this doesn't speed up the model call itself (that
+    // latency lives on the backend/LLM side), but it fixes the "did it
+    // hang?" feeling on slower repos or longer answers.
+    waitTimersRef.current.push(
+      setTimeout(() => setWaitLabel('Still working — larger repos take a bit longer…'), 7000),
+      setTimeout(() => setWaitLabel('Almost there — putting the answer together…'), 20000),
+    );
 
     try {
       const history = nextMessages.slice(0, -1).slice(-12).map(({ role, content }) => ({ role, content }));
       const res = await api.post(`analysis/${analysisId}/chat/`, { message: trimmed, history });
-      setMessages(prev => [...prev, { role: 'model', content: res.data.reply, at: new Date() }]);
+      waitTimersRef.current.forEach(clearTimeout);
+      waitTimersRef.current = [];
+      setSending(false);
+
+      setMessages(prev => {
+        const next = [...prev, { role: 'model', content: '', at: new Date(), streaming: true }];
+        const newIndex = next.length - 1;
+        setStreamingId(newIndex);
+        revealReply(res.data.reply || '', newIndex);
+        return next;
+      });
     } catch (err) {
+      waitTimersRef.current.forEach(clearTimeout);
+      waitTimersRef.current = [];
       const msg = err?.response?.data?.error || 'Something went wrong reaching the AI.';
       setError(msg);
-    } finally {
       setSending(false);
     }
   };
@@ -152,6 +228,8 @@ export default function AIChatTab({ analysisId, projectName }) {
     'Explain the top security finding and how to fix it',
     'Write a test for one of the hotspot files',
   ];
+
+  const composerLocked = sending || streamingId != null;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: 560 }}>
@@ -199,7 +277,7 @@ export default function AIChatTab({ analysisId, projectName }) {
                   onClick={() => setInput(s)}
                   style={{
                     textAlign: 'left', padding: '9px 12px', borderRadius: 8, fontSize: 12.5,
-                    border: '1px solid var(--border)', background: 'var(--bg-hover, rgba(255,255,255,0.04))',
+                    border: '1px solid var(--border)', background: 'var(--bg-card-hover)',
                     color: 'var(--text)', cursor: 'pointer',
                   }}
                 >
@@ -221,13 +299,22 @@ export default function AIChatTab({ analysisId, projectName }) {
                 padding: '10px 14px', borderRadius: 14, fontSize: 13.5,
                 borderTopLeftRadius: m.role === 'user' ? 14 : 4,
                 borderTopRightRadius: m.role === 'user' ? 4 : 14,
-                background: m.role === 'user' ? 'var(--accent)' : 'var(--bg-hover, rgba(255,255,255,0.04))',
+                background: m.role === 'user' ? 'var(--accent)' : 'var(--bg-card-hover)',
                 color: m.role === 'user' ? '#fff' : 'var(--text)',
                 border: m.role === 'user' ? 'none' : '1px solid var(--border)',
               }}>
                 <MessageContent text={m.content} />
+                {m.streaming && (
+                  // Blinking caret at the end of the text currently being revealed —
+                  // same visual cue ChatGPT uses while a reply is still printing.
+                  <span style={{
+                    display: 'inline-block', width: 2, height: 14, marginLeft: 1,
+                    background: 'var(--text)', verticalAlign: 'text-bottom',
+                    animation: 'ai-chat-caret-blink 0.9s step-start infinite',
+                  }} />
+                )}
               </div>
-              <span style={{ fontSize: 10.5, color: 'var(--text-faint, #9ca3af)', marginTop: 4, padding: '0 4px' }}>
+              <span style={{ fontSize: 10.5, color: 'var(--text-faint, #8b93a1)', marginTop: 4, padding: '0 4px' }}>
                 {formatTime(m.at)}
               </span>
             </div>
@@ -239,9 +326,9 @@ export default function AIChatTab({ analysisId, projectName }) {
             <Avatar role="model" />
             <div style={{
               padding: '10px 14px', borderRadius: 14, borderTopLeftRadius: 4,
-              background: 'var(--bg-hover, rgba(255,255,255,0.04))', border: '1px solid var(--border)',
+              background: 'var(--bg-card-hover)', border: '1px solid var(--border)',
             }}>
-              <TypingDots />
+              <TypingDots label={waitLabel} />
             </div>
           </div>
         )}
@@ -269,21 +356,21 @@ export default function AIChatTab({ analysisId, projectName }) {
           onKeyDown={handleKeyDown}
           placeholder="Ask about this repo, or ask for code…"
           rows={1}
-          disabled={sending}
+          disabled={composerLocked}
           style={{
             flex: 1, resize: 'none', padding: '10px 12px', borderRadius: 10,
-            border: '1px solid var(--border)', background: 'var(--bg-input, var(--bg-card))',
+            border: '1px solid var(--border)', background: 'var(--bg-input)',
             color: 'var(--text)', fontSize: 13.5, fontFamily: 'inherit', maxHeight: 140, overflowY: 'auto',
           }}
         />
         <button
           onClick={send}
-          disabled={sending || !input.trim()}
+          disabled={composerLocked || !input.trim()}
           style={{
             width: 40, height: 40, borderRadius: 10, border: 'none', flexShrink: 0,
             background: 'var(--accent)', color: '#fff', fontSize: 16,
-            cursor: sending || !input.trim() ? 'default' : 'pointer',
-            opacity: sending || !input.trim() ? 0.5 : 1,
+            cursor: composerLocked || !input.trim() ? 'default' : 'pointer',
+            opacity: composerLocked || !input.trim() ? 0.5 : 1,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
           }}
           title="Send"

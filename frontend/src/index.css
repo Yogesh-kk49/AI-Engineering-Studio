@@ -1,17 +1,20 @@
-/* ─── Design Tokens (Light / White Professional Theme) ──────────────────── */
+/* ─── Design Tokens (Light theme = default) ──────────────────────────────── */
 :root {
   --bg: #f8f9fb;
   --bg-card: #ffffff;
   --bg-card-hover: #f4f6f9;
   --bg-elevated: #ffffff;
   --bg-input: #ffffff;
+  --bg-subtle: #fafbfc;
   --border: #e2e6ed;
   --border-active: #4f7ef8;
 
-  --text: #4b5563;
+  /* Darkened for readability — previous #4b5563 / #9ca3af were too washed out */
+  --text: #374151;
   --text-strong: #111827;
-  --text-muted: #9ca3af;
+  --text-muted: #6b7280;
   --text-heading: #111827;
+  --text-faint: #8b93a1;
 
   --accent: #4f7ef8;
   --accent-2: #0ea5e9;
@@ -36,6 +39,9 @@
   --status-fail-bg: rgba(239,68,68,0.08);
   --status-fail: #dc2626;
 
+  --bg-code: #0d1117;
+  --bg-code-header: rgba(255,255,255,0.04);
+
   --radius: 10px;
   --radius-sm: 6px;
   --radius-lg: 16px;
@@ -46,6 +52,53 @@
   --shadow-card: 0 1px 3px rgba(0,0,0,0.06), 0 0 0 1px rgba(0,0,0,0.04);
   --shadow-elevated: 0 4px 24px rgba(0,0,0,0.08), 0 0 0 1px rgba(0,0,0,0.06);
   --transition: all 0.18s cubic-bezier(0.4,0,0.2,1);
+}
+
+/* ─── Dark theme — toggled via [data-theme="dark"] on <html> ────────────── */
+[data-theme="dark"] {
+  --bg: #12141a;
+  --bg-card: #1a1d24;
+  --bg-card-hover: #21252e;
+  --bg-elevated: #1e222b;
+  --bg-input: #21252e;
+  --bg-subtle: #16181e;
+  --border: #2b2f3a;
+  --border-active: #5b8dff;
+
+  --text: #d7dae0;
+  --text-strong: #f5f6f8;
+  --text-muted: #a1a8b5;
+  --text-heading: #f9fafb;
+  --text-faint: #7d8494;
+
+  --accent: #5b8dff;
+  --accent-2: #22b8f0;
+  --accent-3: #22d3a5;
+  --accent-glow: rgba(91,141,255,0.14);
+
+  --grade-a-bg: rgba(34,211,165,0.14);
+  --grade-a: #34d399;
+  --grade-b-bg: rgba(91,141,255,0.14);
+  --grade-b: #60a5fa;
+  --grade-c-bg: rgba(251,191,36,0.14);
+  --grade-c: #fbbf24;
+  --grade-d-bg: rgba(251,146,60,0.14);
+  --grade-d: #fb923c;
+  --grade-f-bg: rgba(248,113,113,0.14);
+  --grade-f: #f87171;
+
+  --status-pending-bg: rgba(251,191,36,0.12);
+  --status-pending: #fbbf24;
+  --status-done-bg: rgba(34,211,165,0.12);
+  --status-done: #34d399;
+  --status-fail-bg: rgba(248,113,113,0.12);
+  --status-fail: #f87171;
+
+  --bg-code: #0a0c10;
+  --bg-code-header: rgba(255,255,255,0.06);
+
+  --shadow-card: 0 1px 3px rgba(0,0,0,0.3), 0 0 0 1px rgba(0,0,0,0.2);
+  --shadow-elevated: 0 4px 24px rgba(0,0,0,0.45), 0 0 0 1px rgba(0,0,0,0.3);
 }
 
 /* ─── Reset ─────────────────────────────────────────────────────────────── */
@@ -61,6 +114,7 @@ body {
   background: var(--bg);
   -webkit-font-smoothing: antialiased;
   min-height: 100vh;
+  transition: background 0.25s ease, color 0.25s ease;
 }
 
 a { color: inherit; text-decoration: none; }
@@ -70,8 +124,8 @@ input, textarea { font-family: inherit; outline: none; }
 /* ─── Scrollbar ─────────────────────────────────────────────────────────── */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: #9ca3af; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-faint); }
 
 /* ─── Animations ────────────────────────────────────────────────────────── */
 @keyframes fadeIn {
@@ -105,9 +159,9 @@ input, textarea { font-family: inherit; outline: none; }
 /* ─── Skeleton ──────────────────────────────────────────────────────────── */
 .skeleton {
   background: linear-gradient(90deg,
-    #f3f4f6 25%,
-    #e9eaec 50%,
-    #f3f4f6 75%
+    var(--bg-card-hover) 25%,
+    var(--border) 50%,
+    var(--bg-card-hover) 75%
   );
   background-size: 200% 100%;
   animation: shimmer 1.6s infinite;
