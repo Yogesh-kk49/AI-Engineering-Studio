@@ -47,7 +47,7 @@ export default function HealthScore({ quality }) {
                 </div>
               </div>
               {/* Bar */}
-              <div style={{ background: '#f3f4f6', borderRadius: 99,
+              <div style={{ background: 'var(--border)', borderRadius: 99,
                             height: 6, overflow: 'hidden' }}>
                 {d.score != null && (
                   <div style={{
@@ -61,7 +61,7 @@ export default function HealthScore({ quality }) {
               {/* Top findings */}
               {d.findings?.slice(0, 2).map((f, j) => (
                 <span key={j} style={{ display: 'inline-block', marginTop: 4, marginRight: 4,
-                  fontSize: 10, color: 'var(--text-muted)', background: '#f8f9fb',
+                  fontSize: 10, color: 'var(--text-muted)', background: 'var(--bg-subtle)',
                   padding: '1px 6px', borderRadius: 4 }}>{f}</span>
               ))}
             </div>

@@ -6,6 +6,7 @@
   --bg-elevated: #ffffff;
   --bg-input: #ffffff;
   --bg-subtle: #fafbfc;
+  --bg-glass: rgba(255,255,255,0.9);
   --border: #e2e6ed;
   --border-active: #4f7ef8;
 
@@ -62,6 +63,7 @@
   --bg-elevated: #1e222b;
   --bg-input: #21252e;
   --bg-subtle: #16181e;
+  --bg-glass: rgba(18,20,26,0.85);
   --border: #2b2f3a;
   --border-active: #5b8dff;
 

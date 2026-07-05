@@ -93,7 +93,7 @@ export default function CodeViewerModal({ analysisId, path, onClose }) {
 
         {state.truncated && (
           <div style={{ padding: '8px 18px', fontSize: 11.5, color: 'var(--text-muted)',
-                        borderTop: '1px solid var(--border)', background: '#f8f9fb' }}>
+                        borderTop: '1px solid var(--border)', background: 'var(--bg-subtle)' }}>
             File is large — showing the first portion only.
           </div>
         )}

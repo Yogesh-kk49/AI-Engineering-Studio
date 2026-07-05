@@ -160,7 +160,7 @@ export default function ArchitectureGraphTab({ fileTree, analysisId }) {
         </div>
       </div>
 
-      <div style={{ background: '#f8f9fb', border: '1px solid var(--border)',
+      <div style={{ background: 'var(--bg-subtle)', border: '1px solid var(--border)',
                     borderRadius: 12, padding: '16px 12px', overflowX: 'auto' }}>
         {/* Root node */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 7,

@@ -5,7 +5,8 @@ from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from pathlib import Path
 
-from django.http import FileResponse, HttpResponse
+import requests
+from django.http import FileResponse, HttpResponse, StreamingHttpResponse
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -14,7 +15,7 @@ from .models import RepositoryAnalysis
 from .serializers import RepositoryAnalysisSerializer
 from .services.export_service import build_markdown_report, build_pdf_report
 from .services.github_client import (
-    _parse_github_url, get_latest_commit_sha, CLONE_BASE_DIR, GitHubClient, force_rmtree,
+    _parse_github_url, get_latest_commit_sha, CLONE_BASE_DIR,
     fetch_file_content,
 )
 from .tasks import run_repository_analysis
@@ -28,16 +29,35 @@ class AnalyzeRepositoryView(APIView):
 
     Kicks off an asynchronous analysis job on Celery and returns immediately
     with the job's id + status so the frontend can start polling progress.
-    Does NOT block the request/response cycle on the clone/scan/analyze
-    pipeline — that all happens on a background worker.
+    Does NOT block the request/response cycle on the scan/analyze pipeline
+    — that all happens on a background worker.
+
+    Body:
+      repo_url       (required)
+      branch         (optional)
+      scan_mode      "basic" (default) or "deep".
+                       - "basic": GitHub-API-only, never clones. Fast (~1-5s).
+                       - "deep": full clone + architecture/quality/security/
+                         dependency pipeline. The clone is cached on disk
+                         and reused by future scans (see repo_action).
+      deep_scan      (deep scans only) exhaustive per-file sampling, no cap.
+      force_reclone  force a brand-new download even if one is cached.
+      repo_action    (deep scans only) resolves the duplicate-protection
+                       prompt: "use_existing" | "update" | "fresh". Omit it
+                       on the first request for a repo that's already
+                       cached on disk and this view responds with
+                       "duplicate": true + the available options instead of
+                       queuing a job, so the frontend can ask the user.
 
     Repository cache: before queuing a new job, does a cheap GitHub API call
     (no cloning) to check the latest commit SHA on the requested branch. If
     we already have a Completed analysis for this exact repo_url + branch +
-    commit_sha, that cached result is returned immediately instead of
-    re-running the whole pipeline. Re-clone only happens when the commit has
-    actually changed, the cache lookup is inconclusive (private repo, rate
-    limited, etc.), or the caller explicitly passes force_reclone.
+    commit_sha + scan_mode, that cached result is returned immediately
+    instead of re-running the whole pipeline — this is what makes a rescan
+    of an unchanged repo return in milliseconds. Re-analysis only happens
+    when the commit has actually changed, the cache lookup is inconclusive
+    (private repo, rate limited, etc.), or the caller explicitly passes
+    force_reclone.
     """
 
     def post(self, request):
@@ -45,6 +65,10 @@ class AnalyzeRepositoryView(APIView):
         branch = request.data.get("branch", "").strip()
         force_reclone = bool(request.data.get("force_reclone", False))
         deep_scan = bool(request.data.get("deep_scan", False))
+        scan_mode = (request.data.get("scan_mode") or "basic").strip().lower()
+        if scan_mode not in ("basic", "deep"):
+            scan_mode = "basic"
+        repo_action = (request.data.get("repo_action") or "").strip().lower() or None
 
         if not repo_url:
             return Response({"error": "repo_url is required."}, status=status.HTTP_400_BAD_REQUEST)
@@ -60,17 +84,18 @@ class AnalyzeRepositoryView(APIView):
         project_name = repo_name
 
         # ── Repository cache check (commit-SHA based) ────────────────────
-        # Skipped for deep_scan requests too — a cached result may have
-        # been produced by a sampled (non-deep) run, and returning that
-        # would silently give the caller sampled data when they explicitly
-        # asked for exhaustive coverage.
+        # Skipped for deep_scan (exhaustive) requests — a cached result may
+        # have been produced by a sampled run, and returning that would
+        # silently give the caller sampled data when they explicitly asked
+        # for exhaustive coverage.
         latest_sha = None
         if not force_reclone and not deep_scan:
             latest_sha = get_latest_commit_sha(owner, repo_name, branch or None)
             if latest_sha:
                 cached = (
                     RepositoryAnalysis.objects.filter(
-                        repo_url=repo_url, branch=branch, commit_sha=latest_sha, status="Completed",
+                        repo_url=repo_url, branch=branch, commit_sha=latest_sha,
+                        scan_mode=scan_mode, status="Completed",
                     )
                     .order_by("-created_at")
                     .first()
@@ -94,6 +119,39 @@ class AnalyzeRepositoryView(APIView):
             # (private repo, rate limited, branch doesn't exist yet, etc.)
             # — fall through and let the full pipeline figure it out.
 
+        # ── Duplicate protection (deep scans only) ────────────────────────
+        # A deep scan is the only thing that ever puts a real copy of the
+        # repo on disk. If one's already cached there from an earlier deep
+        # scan, don't silently pick a behavior — ask the caller which of
+        # the three options they want, unless they've already told us via
+        # repo_action (e.g. this is the follow-up request after the user
+        # picked one).
+        if scan_mode == "deep" and not repo_action:
+            existing_deep = (
+                RepositoryAnalysis.objects.filter(
+                    repo_url=repo_url, branch=branch, scan_mode="deep",
+                    status="Completed",
+                )
+                .exclude(repository_path="")
+                .order_by("-created_at")
+                .first()
+            )
+            if existing_deep and Path(existing_deep.repository_path).exists():
+                return Response(
+                    {
+                        "success": True,
+                        "duplicate": True,
+                        "message": "Repository already downloaded.",
+                        "data": RepositoryAnalysisSerializer(existing_deep).data,
+                        "options": [
+                            {"value": "use_existing", "label": "Use Existing Repository"},
+                            {"value": "update", "label": "Update Repository"},
+                            {"value": "fresh", "label": "Download Fresh Copy"},
+                        ],
+                    },
+                    status=status.HTTP_200_OK,
+                )
+
         analysis = RepositoryAnalysis.objects.create(
             repo_url=repo_url,
             branch=branch,
@@ -102,9 +160,12 @@ class AnalyzeRepositoryView(APIView):
             progress_percent=0,
             progress_message="Repository submitted.",
             commit_sha=latest_sha or "",
+            scan_mode=scan_mode,
         )
 
-        task = run_repository_analysis.delay(analysis.pk, repo_url, branch, force_reclone, deep_scan)
+        task = run_repository_analysis.delay(
+            analysis.pk, repo_url, branch, force_reclone, deep_scan, scan_mode, repo_action or "auto",
+        )
         RepositoryAnalysis.objects.filter(pk=analysis.pk).update(celery_task_id=task.id)
         analysis.refresh_from_db()
 
@@ -112,6 +173,7 @@ class AnalyzeRepositoryView(APIView):
             {
                 "success": True,
                 "cached": False,
+                "duplicate": False,
                 "message": "Analysis queued.",
                 "task_id": task.id,
                 "data": RepositoryAnalysisSerializer(analysis).data,
@@ -177,11 +239,14 @@ class DownloadRepositoryZipView(APIView):
     GET /api/analysis/<id>/download/
 
     Streams the repository back to the client as a .zip, mirroring GitHub's
-    own "Download ZIP" button. This app runs locally on the user's machine,
-    so repos are NOT kept cloned on disk between analyses (see tasks.py) —
-    this view clones a fresh, temporary copy only when the button is
-    actually clicked, zips it into memory, then deletes the temp clone
-    immediately afterward. Nothing lingers on the user's PC either way.
+    own "Download ZIP" button. Optimized to avoid duplicate/unnecessary
+    downloads:
+
+      • Deep scan already cached on disk (analysis.repository_path exists)
+        → zip straight from that cached copy. No network call at all.
+      • Basic scan only (nothing cloned) → proxy GitHub's own codeload ZIP
+        endpoint directly to the client. No clone happens on our side
+        either — we never touch disk for this case.
     """
 
     def get(self, request, pk):
@@ -196,61 +261,76 @@ class DownloadRepositoryZipView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # ── Case 1: already cloned & cached on disk — zip it directly ────
+        cached_dir = Path(analysis.repository_path) if analysis.repository_path else None
+        if cached_dir and cached_dir.exists():
+            return self._zip_from_disk(analysis, cached_dir)
+
+        # ── Case 2: basic scan only — proxy GitHub's ZIP API, no clone ───
         try:
-            ctx = GitHubClient(analysis.repo_url, branch=analysis.branch, force_reclone=True).build()
-        except Exception:
-            logger.error("download.clone_failed", extra={"analysis_id": pk, "repo_url": analysis.repo_url}, exc_info=True)
+            owner, repo_name = _parse_github_url(analysis.repo_url)
+        except ValueError:
+            return Response({"error": "Could not resolve this analysis's repository."}, status=status.HTTP_400_BAD_REQUEST)
+
+        ref = analysis.commit_sha or analysis.branch or "HEAD"
+        codeload_url = f"https://codeload.github.com/{owner}/{repo_name}/zip/{ref}"
+        try:
+            upstream = requests.get(codeload_url, stream=True, timeout=(10, 120))
+            upstream.raise_for_status()
+        except requests.exceptions.RequestException:
+            logger.error("download.codeload_failed", extra={"analysis_id": pk, "repo_url": analysis.repo_url}, exc_info=True)
             return Response(
-                {"error": "Could not fetch the repository for download. It may be private, deleted, or rate-limited."},
+                {"error": "Could not fetch the repository ZIP from GitHub. It may be private, deleted, or rate-limited."},
                 status=status.HTTP_502_BAD_GATEWAY,
             )
 
-        if not ctx.clone_success or not ctx.local_path or not ctx.local_path.exists():
-            return Response(
-                {"error": "Could not fetch the repository for download."},
-                status=status.HTTP_502_BAD_GATEWAY,
-            )
+        filename = f"{analysis.project_name or 'repository'}.zip"
+        response = StreamingHttpResponse(
+            upstream.iter_content(chunk_size=65536),
+            content_type="application/zip",
+        )
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return response
 
-        repo_dir = ctx.local_path
+    def _zip_from_disk(self, analysis, repo_dir: Path):
         try:
             # Safety: only ever zip something that actually lives under the
             # configured clone directory.
             repo_dir.resolve().relative_to(CLONE_BASE_DIR.resolve())
+        except ValueError:
+            return Response({"error": "Cached repository path is invalid."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-            buffer = BytesIO()
-            skipped = 0
-            with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
-                for file_path in repo_dir.rglob("*"):
-                    try:
-                        if not file_path.is_file():
-                            continue
-                        rel_parts = file_path.relative_to(repo_dir).parts
-                        if rel_parts and rel_parts[0] == ".git":
-                            continue
-                        arcname = Path(analysis.project_name or "repository") / file_path.relative_to(repo_dir)
-                        zf.write(file_path, arcname=str(arcname))
-                    except OSError:
-                        # A handful of files can vanish or be unreadable
-                        # between listing and writing — most commonly
-                        # Windows MAX_PATH edge cases on very deeply
-                        # nested repos. Skip that one file rather than
-                        # failing the entire download.
-                        skipped += 1
-                        logger.warning(
-                            "download.file_skipped",
-                            extra={"analysis_id": pk, "path": str(file_path)},
-                        )
-            if skipped:
-                logger.warning("download.files_skipped_total", extra={"analysis_id": pk, "count": skipped})
-            buffer.seek(0)
-        finally:
-            # The zip is fully built in memory at this point, so it's safe
-            # to remove the temporary clone immediately — this download
-            # endpoint never leaves repo files sitting on the user's disk,
-            # win or fail.
-            if not force_rmtree(repo_dir):
-                logger.warning("download.cleanup_incomplete", extra={"analysis_id": pk, "path": str(repo_dir)})
+        buffer = BytesIO()
+        skipped = 0
+        with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for file_path in repo_dir.rglob("*"):
+                try:
+                    if not file_path.is_file():
+                        continue
+                    rel_parts = file_path.relative_to(repo_dir).parts
+                    if rel_parts and rel_parts[0] == ".git":
+                        continue
+                    arcname = Path(analysis.project_name or "repository") / file_path.relative_to(repo_dir)
+                    zf.write(file_path, arcname=str(arcname))
+                except OSError:
+                    # A handful of files can vanish or be unreadable
+                    # between listing and writing — most commonly
+                    # Windows MAX_PATH edge cases on very deeply
+                    # nested repos. Skip that one file rather than
+                    # failing the entire download.
+                    skipped += 1
+                    logger.warning(
+                        "download.file_skipped",
+                        extra={"analysis_id": analysis.pk, "path": str(file_path)},
+                    )
+        if skipped:
+            logger.warning("download.files_skipped_total", extra={"analysis_id": analysis.pk, "count": skipped})
+        buffer.seek(0)
 
+        # NOTE: the cached clone is deliberately NOT deleted here — it's
+        # the whole point of the cache: a repeat download (or a future
+        # deep scan of the same repo) reuses this same copy instantly
+        # instead of re-downloading from GitHub.
         filename = f"{analysis.project_name or 'repository'}.zip"
         return FileResponse(buffer, as_attachment=True, filename=filename, content_type="application/zip")
 

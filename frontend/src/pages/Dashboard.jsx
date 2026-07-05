@@ -6,6 +6,7 @@ import { ToastContainer } from '../components/ui/Toast';
 import { useToast }    from '../hooks/useToast';
 import { useAnalyses, isAnalysisInProgress } from '../hooks/useAnalyses';
 import { normalizeRepoUrl } from '../utils/helpers';
+import ThemeToggle from '../components/ui/ThemeToggle';
 
 function EmptyState() {
   return (
@@ -40,7 +41,7 @@ function ErrorState({ message }) {
         </div>
         <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>{message}</div>
         <code style={{ display: 'inline-block', marginTop: 8, fontSize: 12,
-          fontFamily: 'var(--mono)', background: '#f3f4f6',
+          fontFamily: 'var(--mono)', background: 'var(--bg-card-hover)',
           padding: '6px 10px', borderRadius: 6, color: 'var(--text)' }}>
           cd backend && python manage.py runserver
         </code>
@@ -141,7 +142,7 @@ export default function Dashboard() {
       <header style={{
         borderBottom: '1px solid var(--border)',
         padding: '0 32px',
-        background: 'rgba(255,255,255,0.9)',
+        background: 'var(--bg-glass)',
         backdropFilter: 'blur(12px)',
         position: 'sticky', top: 0, zIndex: 100,
         boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
@@ -170,7 +171,7 @@ export default function Dashboard() {
             <div style={{ display: 'flex', gap: 8, marginLeft: 24 }}>
               {completed > 0 && (
                 <span style={{ fontSize: 12, color: 'var(--text-muted)',
-                  background: '#f3f4f6', border: '1px solid var(--border)',
+                  background: 'var(--bg-card-hover)', border: '1px solid var(--border)',
                   padding: '3px 10px', borderRadius: 20 }}>{completed} analyzed</span>
               )}
               {pending > 0 && (
@@ -184,6 +185,10 @@ export default function Dashboard() {
               )}
             </div>
           )}
+
+          <div style={{ marginLeft: 'auto' }}>
+            <ThemeToggle />
+          </div>
         </div>
       </header>
 

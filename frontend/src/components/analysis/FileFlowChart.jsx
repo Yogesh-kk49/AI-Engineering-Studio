@@ -264,7 +264,7 @@ export default function FileFlowChart({ fileTree, analysisId }) {
         ref={scrollRef}
         onMouseDown={handleMouseDown}
         style={{
-          background: '#f8f9fb', border: '1px solid var(--border)',
+          background: 'var(--bg-subtle)', border: '1px solid var(--border)',
           borderRadius: 12, padding: 16, overflow: 'auto',
           cursor: isFullscreen ? (isDragging ? 'grabbing' : 'grab') : 'default',
           userSelect: isDragging ? 'none' : 'auto',
@@ -275,7 +275,7 @@ export default function FileFlowChart({ fileTree, analysisId }) {
       >
         {isFullscreen && (
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                        marginBottom: 12, position: 'sticky', top: 0, background: '#f8f9fb', zIndex: 1 }}>
+                        marginBottom: 12, position: 'sticky', top: 0, background: 'var(--bg-subtle)', zIndex: 1 }}>
             <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-strong)' }}>
               File Flow Chart
             </div>

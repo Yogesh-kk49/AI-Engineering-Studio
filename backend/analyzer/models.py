@@ -37,7 +37,22 @@ class RepositoryAnalysis(models.Model):
 
     repository_path = models.CharField(
         max_length=500,
-        blank=True
+        blank=True,
+        help_text="On-disk path of the cached clone. Only ever set for Deep "
+                   "Scans — Basic Scan never downloads/clones anything.",
+    )
+
+    SCAN_MODE_CHOICES = [
+        ("basic", "Basic"),
+        ("deep", "Deep"),
+    ]
+    scan_mode = models.CharField(
+        max_length=10,
+        choices=SCAN_MODE_CHOICES,
+        default="basic",
+        db_index=True,
+        help_text="'basic' = GitHub-API-only scan, no clone. "
+                   "'deep' = full clone + architecture/quality/security/dependency analysis.",
     )
 
     status = models.CharField(

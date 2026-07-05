@@ -14,7 +14,7 @@ export function ToastContainer({ toasts, onRemove }) {
       {toasts.map(t => (
         <div key={t.id} onClick={() => onRemove(t.id)} style={{
           display: 'flex', alignItems: 'center', gap: 12,
-          background: '#ffffff',
+          background: 'var(--bg-card)',
           border: `1px solid ${COLORS[t.type]?.border || 'var(--border)'}`,
           borderRadius: 'var(--radius)', padding: '12px 16px',
           boxShadow: '0 4px 16px rgba(0,0,0,0.10)', cursor: 'pointer',

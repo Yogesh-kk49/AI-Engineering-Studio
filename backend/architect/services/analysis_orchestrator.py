@@ -120,6 +120,17 @@ class AnalysisReport:
     composite_score: float = 0.0       # 0–100 weighted aggregate
     composite_grade: str = "F"
 
+    # Which pipeline produced this report — "basic" (API-only, no clone) or
+    # "deep" (full clone + architecture/quality/security/dependency scan).
+    scan_mode: str = "deep"
+
+    # Basic-Scan-only fields. Left empty on a deep scan (that pipeline's
+    # much richer `architecture`/`dependencies` results supersede these).
+    basic_frameworks: list[str] = field(default_factory=list)
+    basic_dependencies: dict = field(default_factory=dict)
+    basic_recommendations: list[str] = field(default_factory=list)
+    readme_preview: str = ""
+
     # Errors encountered during analysis
     errors: list[str] = field(default_factory=list)
 
@@ -152,12 +163,16 @@ class AnalysisOrchestrator:
         branch: str = "",
         force_reclone: bool = False,
         deep_scan: bool = False,
+        reuse_mode: str = "auto",
         progress_callback: "Callable[[str, int, str], None] | None" = None,
     ):
         self.repo_url = repo_url
         self.branch = branch
         self.force_reclone = force_reclone
         self.deep_scan = deep_scan
+        # Passed straight through to GitHubClient — controls how an
+        # already-cached clone on disk is treated (see GitHubClient docs).
+        self.reuse_mode = reuse_mode
         # Optional hook: progress_callback(stage, percent, message). Called
         # by the Celery task to push live progress into the DB/WebSocket
         # without the orchestrator needing to know anything about Celery
@@ -174,6 +189,183 @@ class AnalysisOrchestrator:
     # ------------------------------------------------------------------
     # Public
     # ------------------------------------------------------------------
+
+    def run_basic(self) -> AnalysisReport:
+        """
+        Fast Basic Scan pipeline — GitHub API only, never clones/downloads
+        the repository. Populates identity/metadata, the file tree,
+        framework detection, and basic dependency info + recommendations
+        straight from the API, then returns. Typically ~1s for small repos
+        and a few seconds for huge ones, since the only network cost is a
+        handful of small API calls instead of downloading repo contents.
+        """
+        start = time.monotonic()
+        report = AnalysisReport(repo_url=self.repo_url, scan_mode="basic")
+
+        self._report_progress("Scanning", 20, "Fetching repository metadata...")
+        ctx = GitHubClient(self.repo_url, branch=self.branch).build_basic()
+        if not ctx.clone_success:
+            report.errors.extend(ctx.errors)
+            report.duration_seconds = round(time.monotonic() - start, 2)
+            self._report_progress("Failed", 100, "Basic scan failed.")
+            return report
+
+        self._populate_repo_metadata(report, ctx)
+        report.local_path = ""  # nothing on disk for a basic scan
+        report.file_tree = self._build_file_tree(ctx)
+        self._report_progress("Scanning", 60, "Detecting frameworks & dependencies...")
+
+        # Fetch each key file's content exactly once, concurrently, and
+        # reuse it for framework detection + dependency parsing + README
+        # preview below. This used to fetch README/package.json/
+        # requirements.txt sequentially — and package.json/requirements.txt
+        # were each fetched *twice* (once for framework detection, once
+        # for dependency parsing) — which on a repo with all three files
+        # meant 5 sequential network round trips instead of up to 3
+        # parallel ones.
+        contents = self._fetch_key_files(ctx)
+
+        report.basic_frameworks = self._basic_detect_frameworks(ctx, contents)
+        report.basic_dependencies = self._basic_dependency_info(contents)
+        report.readme_preview = (contents.get("readme") or "")[:2000]
+        report.basic_recommendations = self._basic_recommendations(ctx, report)
+
+        report.duration_seconds = round(time.monotonic() - start, 2)
+        self._report_progress("Completed", 100, "Basic scan complete.")
+        return report
+
+    def _basic_file_content(self, ctx: RepoContext, path: str) -> str:
+        try:
+            from analyzer.services.github_client import fetch_file_content
+            result = fetch_file_content(ctx.owner, ctx.repo_name, ctx.commit_sha or "HEAD", path)
+            return result.get("content", "") if "content" in result else ""
+        except Exception:
+            return ""
+
+    def _fetch_key_files(self, ctx: RepoContext) -> dict[str, str]:
+        """Concurrently fetches README / package.json / requirements.txt
+        content (whichever are present) in a single round of parallel
+        requests, keyed by a short label ("readme"/"package_json"/
+        "requirements") — the one place these files are ever fetched for
+        a Basic Scan."""
+        wanted: dict[str, str] = {}
+        readme_path = next(
+            (str(f) for f in ctx.all_files if f.name.lower().startswith("readme")), ""
+        )
+        if readme_path:
+            wanted["readme"] = readme_path
+        if ctx.has_package_json:
+            pkg_path = next((str(f) for f in ctx.all_files if f.name.lower() == "package.json"), "")
+            if pkg_path:
+                wanted["package_json"] = pkg_path
+        if ctx.has_requirements:
+            req_path = next((str(f) for f in ctx.all_files if f.name.lower() == "requirements.txt"), "")
+            if req_path:
+                wanted["requirements"] = req_path
+
+        if not wanted:
+            return {}
+
+        results: dict[str, str] = {}
+        with ThreadPoolExecutor(max_workers=len(wanted), thread_name_prefix="basic-scan-fetch") as pool:
+            futures = {
+                pool.submit(self._basic_file_content, ctx, path): label
+                for label, path in wanted.items()
+            }
+            for future, label in futures.items():
+                results[label] = future.result()
+        return results
+
+    def _basic_detect_frameworks(self, ctx: RepoContext, contents: dict[str, str]) -> list[str]:
+        names = {f.name.lower() for f in ctx.all_files}
+        found: set[str] = set()
+
+        pkg_content = contents.get("package_json", "")
+        if pkg_content:
+            deps_blob = pkg_content.lower()
+            for keyword, label in (
+                ("\"react\"", "React"), ("\"next\"", "Next.js"), ("\"vue\"", "Vue.js"),
+                ("\"@angular/core\"", "Angular"), ("\"express\"", "Express"),
+                ("\"nestjs\"", "NestJS"), ("\"svelte\"", "Svelte"), ("\"vite\"", "Vite"),
+            ):
+                if keyword in deps_blob:
+                    found.add(label)
+
+        req_content = contents.get("requirements", "").lower()
+        if req_content:
+            for keyword, label in (
+                ("django", "Django"), ("flask", "Flask"), ("fastapi", "FastAPI"),
+                ("celery", "Celery"), ("pytest", "Pytest"),
+            ):
+                if keyword in req_content:
+                    found.add(label)
+
+        if "manage.py" in names:
+            found.add("Django")
+        if "angular.json" in names:
+            found.add("Angular")
+        if any(n in names for n in ("next.config.js", "next.config.mjs")):
+            found.add("Next.js")
+        if any(n in names for n in ("tailwind.config.js", "tailwind.config.ts")):
+            found.add("TailwindCSS")
+
+        return sorted(found)
+
+    def _basic_dependency_info(self, contents: dict[str, str]) -> dict:
+        """Lightweight dependency listing (name → version-or-spec) parsed
+        straight from already-fetched package.json / requirements.txt
+        content — no resolution, no vulnerability lookup (that's what
+        Deep Scan's DependencyService is for), and no re-fetching."""
+        info: dict[str, Any] = {}
+
+        pkg_content = contents.get("package_json", "")
+        if pkg_content:
+            try:
+                import json as _json
+                data = _json.loads(pkg_content)
+                deps = {**(data.get("dependencies") or {}), **(data.get("devDependencies") or {})}
+                if deps:
+                    info["npm"] = deps
+            except Exception:
+                pass
+
+        req_content = contents.get("requirements", "")
+        if req_content:
+            pip_deps: dict[str, str] = {}
+            for line in req_content.splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                for sep in ("==", ">=", "<=", "~=", ">", "<"):
+                    if sep in line:
+                        name, _, ver = line.partition(sep)
+                        pip_deps[name.strip()] = f"{sep}{ver.strip()}"
+                        break
+                else:
+                    pip_deps[line] = ""
+            if pip_deps:
+                info["pip"] = pip_deps
+
+        return info
+
+    def _basic_recommendations(self, ctx: RepoContext, report: AnalysisReport) -> list[str]:
+        """Static, rule-based suggestions from presence flags alone —
+        deliberately simple; Deep Scan's QualityService/SecurityService
+        give the exhaustive, code-aware version of this."""
+        recs: list[str] = []
+        if not ctx.has_readme:
+            recs.append("Add a README to help newcomers understand the project.")
+        if not ctx.has_license:
+            recs.append("Add a LICENSE file to clarify how others can use this project.")
+        if not ctx.has_github_actions:
+            recs.append("Consider adding a GitHub Actions workflow for CI.")
+        if not ctx.has_dockerfile and not ctx.has_docker_compose:
+            recs.append("Consider adding a Dockerfile for easier deployment.")
+        if not report.basic_dependencies:
+            recs.append("No dependency manifest detected — consider adding package.json or requirements.txt.")
+        if not recs:
+            recs.append("No obvious gaps found at a glance — run a Deep Scan for a thorough review.")
+        return recs
 
     def run(self) -> AnalysisReport:
         start = time.monotonic()
@@ -301,7 +493,10 @@ class AnalysisOrchestrator:
 
     def _step_clone(self, report: AnalysisReport) -> RepoContext:
         try:
-            ctx = GitHubClient(self.repo_url, branch=self.branch, force_reclone=self.force_reclone).build()
+            ctx = GitHubClient(
+                self.repo_url, branch=self.branch,
+                force_reclone=self.force_reclone, reuse_mode=self.reuse_mode,
+            ).build()
             return ctx
         except Exception as exc:
             report.errors.append(f"Clone step failed: {exc}")

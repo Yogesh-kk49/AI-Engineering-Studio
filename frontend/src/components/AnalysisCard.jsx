@@ -160,11 +160,19 @@ export default function AnalysisCard({ analysis, onDelete, onRescanned, toast })
       // SHA first (one cheap API call). If nothing's changed since the
       // last scan, it returns the existing result instantly instead of
       // re-cloning and re-analyzing the whole repo for no reason. A real
-      // re-clone + full pipeline only runs when there's an actual new
-      // commit to look at.
+      // refresh only happens when there's an actual new commit to look at.
+      //
+      // Rescan always preserves whichever scan_mode the original analysis
+      // used (Basic stays Basic, Deep stays Deep) — otherwise re-checking
+      // a Deep Scan here would silently downgrade it to a cloneless Basic
+      // Scan. For a Deep Scan, repo_action: 'update' also skips the
+      // duplicate-protection prompt, since "Rescan" already *is* the
+      // explicit "check this cached repo for updates" action.
       const res = await api.post('analyze/', {
         repo_url: analysis.repo_url,
         branch: analysis.branch || '',
+        scan_mode: analysis.scan_mode || 'basic',
+        ...(analysis.scan_mode === 'deep' ? { repo_action: 'update' } : {}),
       }, { signal: controller.signal });
       stopRescanProgressSim(true);
       await onRescanned?.(res.data.data, analysis.id, !!res.data.cached);

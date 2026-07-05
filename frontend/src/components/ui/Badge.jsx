@@ -39,7 +39,7 @@ export function StatusBadge({ status }) {
   } else if (IN_PROGRESS_STATUSES.includes(status)) {
     cfg = { bg: 'var(--status-pending-bg)', color: 'var(--status-pending)', label: status };
   } else {
-    cfg = { bg: '#f3f4f6', color: 'var(--text-muted)', label: status };
+    cfg = { bg: 'var(--bg-card-hover)', color: 'var(--text-muted)', label: status };
   }
 
   const isInProgress = IN_PROGRESS_STATUSES.includes(status);
@@ -64,7 +64,7 @@ export function Tag({ children, color }) {
   return (
     <span style={{
       display: 'inline-block',
-      background: color ? `${color}18` : '#f3f4f6',
+      background: color ? `${color}18` : 'var(--bg-card-hover)',
       color: color || 'var(--text)',
       border: '1px solid',
       borderColor: color ? `${color}30` : 'var(--border)',

@@ -13,6 +13,7 @@ Responsibilities
 from __future__ import annotations
 
 import io
+import json
 import logging
 import os
 import re
@@ -234,6 +235,12 @@ class RepoContext:
     has_makefile: bool = False
     has_license: bool = False
 
+    # True when this context was built by build_basic() — API metadata +
+    # tree only, nothing ever cloned/downloaded to disk. Deep-scan-only
+    # views (ZIP download, code viewer already handles this separately)
+    # can check this to know a real on-disk copy doesn't exist.
+    basic_only: bool = False
+
     errors: list[str] = field(default_factory=list)
 
 
@@ -405,6 +412,33 @@ def get_latest_commit_sha(owner: str, repo: str, branch: str | None = None) -> s
     return data.get("sha")
 
 
+def get_repo_tree(owner: str, repo: str, ref: str | None = None) -> list[dict] | None:
+    """
+    Cheap way to get the *entire* file/dir listing of a repo without ever
+    cloning or downloading a tarball — uses GitHub's Git Trees API with
+    `recursive=1`, which returns every blob/tree entry in a single call.
+
+    Powers Basic Scan's file tree / framework-detection / presence-flag
+    needs. Returns a list of {"path": str, "type": "blob"|"tree", ...} or
+    None if it couldn't be fetched (private repo, rate limited, huge repo
+    GitHub refuses to recurse, etc.) — callers should treat None the same
+    as "no tree available", not as a hard failure.
+    """
+    resolved_ref = ref or "HEAD"
+    cache_key = f"gh:tree:{owner}/{repo}:{resolved_ref}"
+    data = _get_cached(
+        f"/repos/{owner}/{repo}/git/trees/{resolved_ref}?recursive=1",
+        REPO_METADATA_CACHE_TTL,
+        cache_key,
+    )
+    if not data or not isinstance(data, dict):
+        return None
+    if data.get("truncated"):
+        logger.info("github_api.tree_truncated", extra={"owner": owner, "repo": repo})
+    tree = data.get("tree")
+    return tree if isinstance(tree, list) else None
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Core class
 # ──────────────────────────────────────────────────────────────────────────────
@@ -418,9 +452,19 @@ class GitHubClient:
         ctx = GitHubClient("https://github.com/psf/requests").build()
     """
 
-    def __init__(self, repo_url: str, *, branch: str = "", force_reclone: bool = False):
+    def __init__(self, repo_url: str, *, branch: str = "", force_reclone: bool = False,
+                 reuse_mode: str = "auto"):
         self.url = repo_url
         self.force_reclone = force_reclone
+        # How to treat an already-downloaded copy on disk:
+        #   "auto"           – reuse instantly if the remote commit SHA
+        #                      hasn't changed, otherwise refresh (the
+        #                      "git pull" equivalent for our tarball-based
+        #                      approach). Default, used by rescans.
+        #   "force_existing" – always reuse whatever's on disk, skip the
+        #                      SHA check entirely ("Use Existing Repository").
+        #   ("force_reclone=True" always wins over both — "Download Fresh Copy".)
+        self.reuse_mode = reuse_mode
         self.requested_branch = branch.strip()
         self.owner, self.repo_name = _parse_github_url(repo_url)
         self.ctx = RepoContext(
@@ -449,6 +493,60 @@ class GitHubClient:
             self._walk_repo()
             self._set_presence_flags()
             logger.warning("TIMING   _walk_repo+_set_presence_flags: %.2fs", time.monotonic() - t0)
+        return self.ctx
+
+    def build_basic(self) -> RepoContext:
+        """
+        Basic Scan entry point — GitHub API only, no clone/download of any
+        kind. Fetches repo metadata (same as build()) plus the full file
+        tree via the Git Trees API, and derives file/dir lists + presence
+        flags from that tree alone so the rest of the pipeline (file tree
+        rendering, framework/dependency hints) can reuse the exact same
+        code paths as a full clone would populate.
+        """
+        self.ctx.basic_only = True
+        t0 = time.monotonic()
+        self._fetch_api_metadata()
+        logger.warning("TIMING   _fetch_api_metadata (basic): %.2fs", time.monotonic() - t0)
+
+        ref = self.requested_branch or "HEAD"
+        sha = get_latest_commit_sha(self.owner, self.repo_name, ref)
+        self.ctx.commit_sha = sha or ""
+
+        t0 = time.monotonic()
+        tree = get_repo_tree(self.owner, self.repo_name, self.ctx.commit_sha or ref)
+        logger.warning("TIMING   get_repo_tree (basic): %.2fs", time.monotonic() - t0)
+
+        if tree is None:
+            self.ctx.errors.append(
+                "Could not fetch the file tree from GitHub's API (rate limited, private, or too large to list)."
+            )
+            # Metadata-only is still useful — don't fail the whole scan.
+            self.ctx.clone_success = bool(self.ctx.api_data)
+            return self.ctx
+
+        files: list[Path] = []
+        dirs: list[Path] = []
+        for entry in tree:
+            path = entry.get("path", "")
+            if not path:
+                continue
+            parts = Path(path).parts
+            if any(part in self._SKIP_DIRS or part.startswith(".") for part in parts[:-1]):
+                continue
+            if entry.get("type") == "blob":
+                files.append(Path(path))
+            elif entry.get("type") == "tree":
+                if parts and (parts[-1] in self._SKIP_DIRS or parts[-1].startswith(".")):
+                    continue
+                dirs.append(Path(path))
+
+        self.ctx.all_files = files
+        self.ctx.all_dirs = dirs
+        self.ctx.file_count = len(files)
+        self.ctx.dir_count = len(dirs)
+        self._set_presence_flags()
+        self.ctx.clone_success = True
         return self.ctx
 
     # ------------------------------------------------------------------
@@ -558,6 +656,20 @@ class GitHubClient:
     # Clone / update
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _read_meta_sha(meta_path: Path) -> str:
+        try:
+            return json.loads(meta_path.read_text()).get("commit_sha", "") or ""
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _write_meta_sha(meta_path: Path, commit_sha: str) -> None:
+        try:
+            meta_path.write_text(json.dumps({"commit_sha": commit_sha}))
+        except Exception:
+            pass  # best-effort — worst case a future reuse check just re-downloads
+
     def _clone_or_update(self) -> None:
         """
         Fetch the repo contents. This used to shell out to `git clone`,
@@ -598,18 +710,40 @@ class GitHubClient:
         # doesn't clobber each other's working copy.
         safe_branch = re.sub(r"[^A-Za-z0-9._-]", "_", branch)
         dest = CLONE_BASE_DIR / self.owner / f"{self.repo_name}@{safe_branch}"
+        # Sidecar marker (never inside `dest`, so it's never picked up by
+        # _walk_repo/analysis) recording which commit the cached copy on
+        # disk actually is. This is what lets a rescan tell "unchanged,
+        # reuse instantly" apart from "changed, refresh" without a real
+        # local git history to diff against.
+        meta_path = dest.parent / f"{dest.name}.meta.json"
 
         if dest.exists():
-            if not self.force_reclone:
-                # Already have a copy from earlier in this same process
-                # (or a prior request that didn't get cleaned up) — reuse
-                # it instead of re-downloading.
+            if self.force_reclone:
+                pass  # "Download Fresh Copy" — always fall through to re-download below.
+            elif self.reuse_mode == "force_existing":
+                # "Use Existing Repository" — reuse whatever's on disk,
+                # no network round trip at all, not even the cheap SHA check.
                 self.ctx.local_path = dest
                 self.ctx.clone_success = True
-                sha = get_latest_commit_sha(self.owner, self.repo_name, ref)
-                if sha:
-                    self.ctx.commit_sha = sha
+                cached_sha = self._read_meta_sha(meta_path)
+                if cached_sha:
+                    self.ctx.commit_sha = cached_sha
                 return
+            else:
+                # "auto" (default; also used by plain rescans) — cache
+                # cleanly: same commit as last time → reuse the on-disk
+                # copy instantly (no download at all); different commit →
+                # refresh it (the tarball-based equivalent of `git pull`,
+                # since there's no real git history to fetch/merge into).
+                latest_sha = get_latest_commit_sha(self.owner, self.repo_name, ref)
+                cached_sha = self._read_meta_sha(meta_path)
+                if not latest_sha or not cached_sha or latest_sha == cached_sha:
+                    self.ctx.local_path = dest
+                    self.ctx.clone_success = True
+                    self.ctx.commit_sha = cached_sha or latest_sha or ""
+                    return
+                # Commit changed on the remote — refresh below instead of
+                # trusting the stale copy.
             if not force_rmtree(dest) and dest.exists():
                 # Windows MAX_PATH can leave a handful of deeply-nested
                 # files behind even after force_rmtree's retries. Rather
@@ -697,6 +831,7 @@ class GitHubClient:
             # from the API instead of needing a local git history for it.
             sha = get_latest_commit_sha(self.owner, self.repo_name, ref)
             self.ctx.commit_sha = sha or ""
+            self._write_meta_sha(meta_path, self.ctx.commit_sha)
 
         except requests.exceptions.RequestException as exc:
             self.ctx.errors.append(f"Download error: {exc}")

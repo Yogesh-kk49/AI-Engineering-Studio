@@ -20,7 +20,7 @@ function Finding({ f }) {
   const hiddenCount = Math.max(f.occurrences - locations.length, 0);
 
   return (
-    <div style={{ background: '#f8f9fb',
+    <div style={{ background: 'var(--bg-subtle)',
                   border: `1px solid ${color}30`, borderLeft: `3px solid ${color}`,
                   borderRadius: 8, padding: '12px 14px', marginBottom: 8 }}>
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, flexWrap: 'wrap' }}>

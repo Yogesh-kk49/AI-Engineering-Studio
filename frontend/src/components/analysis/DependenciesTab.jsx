@@ -32,7 +32,7 @@ export default function DependenciesTab({ dependencies }) {
           { label: 'Flagged',  value: flagged_count,      color: flagged_count > 0 ? 'var(--grade-f)' : 'var(--grade-a)' },
         ].map(({ label, value, color }) => (
           <div key={label} style={{ textAlign: 'center', padding: '12px 16px',
-            background: '#f8f9fb', border: '1px solid var(--border)', borderRadius: 10 }}>
+            background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 10 }}>
             <div style={{ fontSize: 24, fontWeight: 800, color: color || 'var(--text-strong)' }}>
               {value ?? '—'}
             </div>
