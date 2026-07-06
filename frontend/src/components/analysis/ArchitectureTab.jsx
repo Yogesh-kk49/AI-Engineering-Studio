@@ -1,5 +1,6 @@
 import React from 'react';
 import { Tag } from '../ui/Badge';
+import { ScanModeNotice } from '../ui/ScanModeNotice';
 
 function Group({ title, items }) {
   if (!items?.length) return null;
@@ -54,7 +55,17 @@ function LayerDiagram() {
   );
 }
 
-export default function ArchitectureTab({ architecture }) {
+export default function ArchitectureTab({ architecture, scanMode, onRunDeepScan, deepScanRunning, deepScanProgress }) {
+  // A Basic Scan never runs the architecture detector — it still returns a
+  // default result with every list empty, which would otherwise render
+  // here as a blank layer diagram with no chips and no explanation.
+  if (scanMode === 'basic') {
+    return (
+      <ScanModeNotice label="Architecture analysis" onRunDeepScan={onRunDeepScan}
+                      running={deepScanRunning} progress={deepScanProgress} />
+    );
+  }
+
   if (!architecture) return (
     <div style={{ color: 'var(--text-muted)', textAlign: 'center', padding: 48 }}>
       Architecture data not available

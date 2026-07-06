@@ -52,7 +52,7 @@ function ErrorState({ message }) {
 
 export default function Dashboard() {
   const { toasts, removeToast, success, error: toastError, info } = useToast();
-  const { analyses, loading, error, refresh, deleteAnalysis }     = useAnalyses();
+  const { analyses, loading, error, refresh, deleteAnalysis, patchAnalysis } = useAnalyses();
   const [search, setSearch] = useState('');
   const toast = { success, error: toastError, info };
 
@@ -271,7 +271,7 @@ export default function Dashboard() {
         {!loading && !error && filtered.length > 0 && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             {filtered.map(a => (
-              <AnalysisCard key={a.id} analysis={a} onDelete={handleDelete} onRescanned={handleRescanned} toast={toast} />
+              <AnalysisCard key={a.id} analysis={a} onDelete={handleDelete} onRescanned={handleRescanned} onFullDataLoaded={patchAnalysis} toast={toast} />
             ))}
           </div>
         )}

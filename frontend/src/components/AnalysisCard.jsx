@@ -1,7 +1,8 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { GradeBadge, StatusBadge, Tag } from './ui/Badge';
 import { ScoreRing } from './ui/ScoreRing';
-import { formatNumber, timeAgo } from '../utils/helpers';
+import { ProgressRing } from './ui/ProgressRing';
+import { formatNumber, formatBytes, timeAgo } from '../utils/helpers';
 import OverviewTab       from './analysis/OverviewTab';
 import HealthScore       from './analysis/HealthScore';
 import SecurityTab       from './analysis/SecurityTab';
@@ -27,12 +28,13 @@ const TABS = [
   { id: 'recommendations',  label: 'Recommendations' },
 ];
 
-export default function AnalysisCard({ analysis, onDelete, onRescanned, toast }) {
+export default function AnalysisCard({ analysis, onDelete, onRescanned, onFullDataLoaded, toast }) {
   const [open, setOpen]           = useState(false);
   const [activeTab, setActiveTab] = useState('overview');
   const [downloading, setDownloading] = useState(false);
   const [downloadSlow, setDownloadSlow] = useState(false);
-  const [downloadProgress, setDownloadProgress] = useState(null); // 0-100, or null while size is still unknown
+  const [downloadProgress, setDownloadProgress] = useState(null); // 0-100, or null while total size is unknown
+  const [downloadedBytes, setDownloadedBytes] = useState(0);      // raw bytes received so far — always known, even without a total
   const downloadSlowTimerRef = useRef(null);
   const [exporting, setExporting] = useState(null);   // 'markdown' | 'pdf' | null
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
@@ -53,6 +55,27 @@ export default function AnalysisCard({ analysis, onDelete, onRescanned, toast })
   const m         = analysis.metadata || {};
   const isPending = isAnalysisInProgress(analysis);
   const isFailed  = analysis.status === 'Failed';
+
+  // The list endpoint only sends a handful of summary fields in
+  // `metadata` (see RepositoryAnalysisListView) — enough for this
+  // collapsed header, but not enough for the tabs below. `file_tree` is
+  // always present in the *full* metadata for any completed analysis
+  // (basic or deep), so its absence here reliably means "this row still
+  // only has the slim summary" — fetch the real thing the first time the
+  // card is opened. Once `onFullDataLoaded` merges the response in,
+  // `m.file_tree` will be present and this won't fire again for this row.
+  const [loadingFullData, setLoadingFullData] = useState(false);
+  useEffect(() => {
+    if (!open || analysis.status !== 'Completed' || m.file_tree) return;
+    let cancelled = false;
+    setLoadingFullData(true);
+    api.get(`analysis/${analysis.id}/`)
+      .then(res => { if (!cancelled) onFullDataLoaded?.(analysis.id, res.data); })
+      .catch(() => { /* tabs just show sparse data until the next successful load */ })
+      .finally(() => { if (!cancelled) setLoadingFullData(false); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, analysis.id, analysis.status]);
 
   const handleDelete = (e) => {
     e.stopPropagation();
@@ -82,6 +105,7 @@ export default function AnalysisCard({ analysis, onDelete, onRescanned, toast })
     if (downloading) return;
     setDownloading(true);
     setDownloadProgress(null);
+    setDownloadedBytes(0);
     // The backend has to clone/refresh the repo and zip it before the
     // response starts streaming, so large repos can take a while with no
     // visible progress. After 8s, swap the tooltip/spinner to say so
@@ -91,10 +115,14 @@ export default function AnalysisCard({ analysis, onDelete, onRescanned, toast })
       const res = await api.get(`analysis/${analysis.id}/download/`, {
         responseType: 'blob',
         onDownloadProgress: (progressEvent) => {
-          // total is only known when the server sends a Content-Length
-          // header — GitHub's zipball response usually does, but if it's
-          // ever missing (chunked/compressed transfer), fall back to
-          // showing an indeterminate spinner instead of a stuck 0%.
+          // `loaded` (bytes received so far) is always available, unlike
+          // `total` — GitHub's zipball response usually sends a
+          // Content-Length, but when it doesn't (chunked/compressed
+          // transfer), there's no knowable percentage. Rather than show a
+          // blank spinner in that case, fall back to the same thing a
+          // browser's own download manager shows for a stream of unknown
+          // length: a running byte count that actually moves.
+          setDownloadedBytes(progressEvent.loaded);
           if (progressEvent.total) {
             setDownloadSlow(false); // real progress beats the "still fetching" message
             setDownloadProgress(Math.round((progressEvent.loaded / progressEvent.total) * 100));
@@ -119,6 +147,7 @@ export default function AnalysisCard({ analysis, onDelete, onRescanned, toast })
       clearTimeout(downloadSlowTimerRef.current);
       setDownloadSlow(false);
       setDownloadProgress(null);
+      setDownloadedBytes(0);
       setDownloading(false);
     }
   };
@@ -145,12 +174,14 @@ export default function AnalysisCard({ analysis, onDelete, onRescanned, toast })
     }
   };
 
-  const handleRescan = async (e) => {
-    e.stopPropagation();
+  const handleRescan = async (e, forceMode) => {
+    e?.stopPropagation?.();
     if (rescanLockRef.current) return;
     rescanLockRef.current = true;
     setRescanning(true);
     startRescanProgressSim();
+
+    const mode = forceMode || analysis.scan_mode || 'basic';
 
     const controller = new AbortController();
     rescanAbortRef.current = controller;
@@ -162,17 +193,20 @@ export default function AnalysisCard({ analysis, onDelete, onRescanned, toast })
       // re-cloning and re-analyzing the whole repo for no reason. A real
       // refresh only happens when there's an actual new commit to look at.
       //
-      // Rescan always preserves whichever scan_mode the original analysis
+      // Rescan normally preserves whichever scan_mode the original analysis
       // used (Basic stays Basic, Deep stays Deep) — otherwise re-checking
       // a Deep Scan here would silently downgrade it to a cloneless Basic
-      // Scan. For a Deep Scan, repo_action: 'update' also skips the
-      // duplicate-protection prompt, since "Rescan" already *is* the
-      // explicit "check this cached repo for updates" action.
+      // Scan. The one exception is an explicit "Try Deep Scan" upgrade
+      // (forceMode === 'deep'), used when a Basic Scan's tabs offer to
+      // fetch the fuller Deep Scan data. For a Deep Scan, repo_action:
+      // 'update' also skips the duplicate-protection prompt, since
+      // "Rescan"/"Try Deep Scan" already *is* the explicit "check this
+      // cached repo for updates" action.
       const res = await api.post('analyze/', {
         repo_url: analysis.repo_url,
         branch: analysis.branch || '',
-        scan_mode: analysis.scan_mode || 'basic',
-        ...(analysis.scan_mode === 'deep' ? { repo_action: 'update' } : {}),
+        scan_mode: mode,
+        ...(mode === 'deep' ? { repo_action: 'update' } : {}),
       }, { signal: controller.signal });
       stopRescanProgressSim(true);
       await onRescanned?.(res.data.data, analysis.id, !!res.data.cached);
@@ -193,6 +227,12 @@ export default function AnalysisCard({ analysis, onDelete, onRescanned, toast })
       setRescanning(false);
     }
   };
+
+  // Wired into the "Try Deep Scan" notice shown by tabs whose data a Basic
+  // Scan never collects (security, quality, architecture, dependencies).
+  // Shares the same in-flight lock/progress ring as the header's rescan
+  // button so two upgrade attempts can't overlap.
+  const handleRunDeepScan = () => handleRescan(null, 'deep');
 
   const handlePauseRescan = (e) => {
     e.stopPropagation();
@@ -380,30 +420,20 @@ export default function AnalysisCard({ analysis, onDelete, onRescanned, toast })
                     ? `Rescanning — ${Math.round(rescanProgress)}% (click to pause)`
                     : 'Check for updates (instant if nothing changed)'
                 }
-                style={{ width: 30, height: 30, borderRadius: 6, background: 'transparent',
-                  border: `1px solid ${rescanning ? 'var(--accent)' : 'var(--border)'}`,
+                style={{ width: rescanning ? 38 : 30, height: rescanning ? 38 : 30, borderRadius: '50%',
+                  background: 'transparent',
+                  border: `1px solid ${rescanning ? 'transparent' : 'var(--border)'}`,
                   color: rescanning ? 'var(--accent)' : 'var(--text-muted)',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   cursor: 'pointer', transition: 'var(--transition)' }}
-                onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.color = 'var(--accent)'; }}
-                onMouseLeave={e => { e.currentTarget.style.borderColor = rescanning ? 'var(--accent)' : 'var(--border)'; e.currentTarget.style.color = rescanning ? 'var(--accent)' : 'var(--text-muted)'; }}
+                onMouseEnter={e => { if (!rescanning) { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.color = 'var(--accent)'; } }}
+                onMouseLeave={e => { if (!rescanning) { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--text-muted)'; } }}
               >
                 {rescanning ? (
-                  // Determinate-looking ring (simulated — see comment above
-                  // rescanProgress state) with a tiny pause icon at its center,
-                  // same visual language as the download ring below.
-                  <div style={{
-                    width: 16, height: 16, borderRadius: '50%', flexShrink: 0,
-                    background: `conic-gradient(var(--accent) ${rescanProgress * 3.6}deg, rgba(79,126,248,0.18) 0deg)`,
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    transition: 'background 0.15s linear',
-                  }}>
-                    <div style={{ width: 10, height: 10, borderRadius: '50%', background: 'var(--bg-card)',
-                                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1 }}>
-                      <span style={{ width: 1.5, height: 5, background: 'var(--accent)', borderRadius: 1 }} />
-                      <span style={{ width: 1.5, height: 5, background: 'var(--accent)', borderRadius: 1 }} />
-                    </div>
-                  </div>
+                  // Big, readable ring with the live percentage centered
+                  // inside it (see comment above rescanProgress state for
+                  // why the number is simulated rather than server-reported).
+                  <ProgressRing percent={rescanProgress} size={36} strokeWidth={3.5} />
                 ) : (
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
                        stroke="currentColor" strokeWidth="2">
@@ -413,18 +443,6 @@ export default function AnalysisCard({ analysis, onDelete, onRescanned, toast })
                   </svg>
                 )}
               </button>
-
-              {rescanning && (
-                <div style={{
-                  position: 'absolute', top: -22, right: 0, zIndex: 5,
-                  fontSize: 10, fontWeight: 700, color: 'var(--accent)',
-                  background: 'var(--bg-card)', border: '1px solid var(--border)',
-                  padding: '1px 6px', borderRadius: 6, whiteSpace: 'nowrap',
-                  boxShadow: '0 1px 4px rgba(0,0,0,0.08)',
-                }}>
-                  {Math.round(rescanProgress)}%
-                </div>
-              )}
             </div>
           )}
 
@@ -435,34 +453,31 @@ export default function AnalysisCard({ analysis, onDelete, onRescanned, toast })
                 disabled={downloading}
                 title={
                   downloadProgress != null ? `Downloading — ${downloadProgress}%`
+                  : downloadedBytes > 0 ? `Downloading — ${formatBytes(downloadedBytes)} so far`
                   : downloadSlow ? 'Still fetching the repository — large repos can take a minute'
                   : 'Download repository as ZIP'
                 }
-                style={{ width: 30, height: 30, borderRadius: 6, background: 'transparent',
-                  border: '1px solid var(--border)', color: 'var(--text-muted)',
+                style={{ width: downloading ? 38 : 30, height: downloading ? 38 : 30, borderRadius: '50%',
+                  background: 'transparent',
+                  border: `1px solid ${downloading ? 'transparent' : 'var(--border)'}`,
+                  color: 'var(--text-muted)',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   cursor: downloading ? 'wait' : 'pointer', transition: 'var(--transition)' }}
                 onMouseEnter={e => { if (!downloading) { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.color = 'var(--accent)'; } }}
                 onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)';  e.currentTarget.style.color = 'var(--text-muted)'; }}
               >
                 {downloading ? (
-                  downloadProgress != null ? (
-                    // Determinate ring — fills clockwise as real bytes arrive,
-                    // instead of a spinner that never actually tells you how
-                    // much longer this is going to take.
-                    <div style={{
-                      width: 16, height: 16, borderRadius: '50%', flexShrink: 0,
-                      background: `conic-gradient(var(--accent) ${downloadProgress * 3.6}deg, rgba(79,126,248,0.18) 0deg)`,
-                      display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      transition: 'background 0.15s linear',
-                    }}>
-                      <div style={{ width: 10, height: 10, borderRadius: '50%', background: 'var(--bg-card)' }} />
-                    </div>
-                  ) : (
-                    <span style={{ width: 13, height: 13, border: '2px solid rgba(79,126,248,0.25)',
-                                   borderTopColor: 'var(--accent)', borderRadius: '50%',
-                                   animation: 'spin 0.7s linear infinite', display: 'block' }} />
-                  )
+                  // Big, readable ring with the live percentage centered
+                  // inside it — fills clockwise as real bytes arrive, so it
+                  // actually tells you how much longer this will take rather
+                  // than just spinning. When the server doesn't send a
+                  // Content-Length (no knowable total, so no percentage),
+                  // the ring spins indeterminately but the badge below it
+                  // still shows the real, moving byte count — the same
+                  // thing a browser's own download manager shows for a
+                  // stream of unknown length, instead of a spinner that
+                  // never tells you anything actually happened.
+                  <ProgressRing percent={downloadProgress} size={36} strokeWidth={3.5} />
                 ) : (
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
                        stroke="currentColor" strokeWidth="2">
@@ -473,7 +488,7 @@ export default function AnalysisCard({ analysis, onDelete, onRescanned, toast })
                 )}
               </button>
 
-              {downloading && (
+              {downloading && downloadProgress == null && downloadedBytes > 0 && (
                 <div style={{
                   position: 'absolute', top: -22, right: 0, zIndex: 5,
                   fontSize: 10, fontWeight: 700, color: 'var(--accent)',
@@ -481,7 +496,7 @@ export default function AnalysisCard({ analysis, onDelete, onRescanned, toast })
                   padding: '1px 6px', borderRadius: 6, whiteSpace: 'nowrap',
                   boxShadow: '0 1px 4px rgba(0,0,0,0.08)',
                 }}>
-                  {downloadProgress != null ? `${downloadProgress}%` : 'Fetching…'}
+                  {formatBytes(downloadedBytes)}
                 </div>
               )}
             </div>
@@ -548,20 +563,48 @@ export default function AnalysisCard({ analysis, onDelete, onRescanned, toast })
 
           {/* Tab content */}
           <div style={{ padding: 24, animation: 'fadeIn 0.2s ease', background: 'var(--bg-card)' }}>
+            {loadingFullData && !m.file_tree ? (
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            gap: 10, padding: 48, color: 'var(--text-muted)', fontSize: 13 }}>
+                <span style={{ width: 16, height: 16, border: '2px solid rgba(79,126,248,0.25)',
+                               borderTopColor: 'var(--accent)', borderRadius: '50%',
+                               animation: 'spin 0.7s linear infinite', display: 'inline-block' }} />
+                Loading full report…
+              </div>
+            ) : (<>
             {activeTab === 'overview'        && <OverviewTab analysis={analysis} />}
             {activeTab === 'chat' && (
               <AIChatTab analysisId={analysis.id} projectName={analysis.project_name} />
             )}
-            {activeTab === 'health'          && <HealthScore quality={m.quality} />}
-            {activeTab === 'architecture'    && <ArchitectureTab architecture={m.architecture} />}
+            {activeTab === 'health'          && (
+              <HealthScore quality={m.quality} scanMode={analysis.scan_mode}
+                           onRunDeepScan={handleRunDeepScan} deepScanRunning={rescanning}
+                           deepScanProgress={rescanProgress} />
+            )}
+            {activeTab === 'architecture'    && (
+              <ArchitectureTab architecture={m.architecture} scanMode={analysis.scan_mode}
+                                onRunDeepScan={handleRunDeepScan} deepScanRunning={rescanning}
+                                deepScanProgress={rescanProgress} />
+            )}
             {activeTab === 'structure'       && <ArchitectureGraphTab fileTree={m.file_tree} analysisId={analysis.id} />}
             {activeTab === 'flowchart'       && <FileFlowChart fileTree={m.file_tree} analysisId={analysis.id} />}
-            {activeTab === 'security'        && <SecurityTab security={m.security} />}
-            {activeTab === 'dependencies'    && <DependenciesTab dependencies={m.dependencies} />}
+            {activeTab === 'security'        && (
+              <SecurityTab security={m.security} scanMode={analysis.scan_mode}
+                           onRunDeepScan={handleRunDeepScan} deepScanRunning={rescanning}
+                           deepScanProgress={rescanProgress} />
+            )}
+            {activeTab === 'dependencies'    && (
+              <DependenciesTab dependencies={m.dependencies} scanMode={analysis.scan_mode}
+                                onRunDeepScan={handleRunDeepScan} deepScanRunning={rescanning}
+                                deepScanProgress={rescanProgress} />
+            )}
             {activeTab === 'recommendations' && (
               <RecommendationsTab predictions={m.predictions} quality={m.quality}
-                                  security={m.security} architecture={m.architecture} />
+                                  security={m.security} architecture={m.architecture}
+                                  scanMode={analysis.scan_mode} onRunDeepScan={handleRunDeepScan}
+                                  deepScanRunning={rescanning} deepScanProgress={rescanProgress} />
             )}
+            </>)}
           </div>
         </div>
       )}

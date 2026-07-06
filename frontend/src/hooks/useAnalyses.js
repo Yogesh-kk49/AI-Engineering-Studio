@@ -113,5 +113,16 @@ export function useAnalyses() {
     }
   }, []);
 
-  return { analyses, loading, error, refresh, deleteAnalysis };
+  // The list endpoint now sends a trimmed `metadata` (just what a
+  // collapsed card's header needs) instead of every analysis's full
+  // report — see the matching comment in RepositoryAnalysisListView.
+  // AnalysisCard calls this once it's fetched its own full detail
+  // (GET /api/analysis/<id>/) the first time it's expanded, so that
+  // row's tabs get the complete data without every *other* row having
+  // paid for it too.
+  const patchAnalysis = useCallback((id, fullData) => {
+    setAnalyses(prev => prev.map(row => row.id === id ? fullData : row));
+  }, []);
+
+  return { analyses, loading, error, refresh, deleteAnalysis, patchAnalysis };
 }

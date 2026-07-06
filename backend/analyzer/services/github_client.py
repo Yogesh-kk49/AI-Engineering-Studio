@@ -505,13 +505,12 @@ class GitHubClient:
         code paths as a full clone would populate.
         """
         self.ctx.basic_only = True
-        t0 = time.monotonic()
-        self._fetch_api_metadata()
-        logger.warning("TIMING   _fetch_api_metadata (basic): %.2fs", time.monotonic() - t0)
-
         ref = self.requested_branch or "HEAD"
-        sha = get_latest_commit_sha(self.owner, self.repo_name, ref)
+
+        t0 = time.monotonic()
+        sha = self._fetch_api_metadata(extra_task=lambda: get_latest_commit_sha(self.owner, self.repo_name, ref))
         self.ctx.commit_sha = sha or ""
+        logger.warning("TIMING   _fetch_api_metadata+commit_sha (basic): %.2fs", time.monotonic() - t0)
 
         t0 = time.monotonic()
         tree = get_repo_tree(self.owner, self.repo_name, self.ctx.commit_sha or ref)
@@ -553,7 +552,7 @@ class GitHubClient:
     # API metadata
     # ------------------------------------------------------------------
 
-    def _fetch_api_metadata(self) -> None:
+    def _fetch_api_metadata(self, extra_task=None):
         # None of these three calls depend on each other — they only need
         # owner/repo, which we already have — so there's no reason to pay
         # for three round trips back to back. Run them concurrently
@@ -561,14 +560,22 @@ class GitHubClient:
         # parallelism, unlike the CPU-bound per-file analysis steps) and
         # apply all the results afterward, back on this thread, so we're
         # never writing to `self.ctx` from multiple threads at once.
-        with ThreadPoolExecutor(max_workers=3) as pool:
+        #
+        # `extra_task` (optional, zero-arg callable) lets a caller fold one
+        # more independent network call into this exact same batch instead
+        # of paying for it as its own separate sequential round trip
+        # afterward — build_basic() uses this for the commit-SHA lookup,
+        # which doesn't depend on any of the three metadata calls either.
+        with ThreadPoolExecutor(max_workers=4 if extra_task else 3) as pool:
             summary_future = pool.submit(get_repo_summary, self.owner, self.repo_name)
             languages_future = pool.submit(self._fetch_languages)
             contributors_future = pool.submit(self._fetch_contributors_count)
+            extra_future = pool.submit(extra_task) if extra_task else None
 
             data = summary_future.result()
             languages_result = languages_future.result()
             contributors_result = contributors_future.result()
+            extra_result = extra_future.result() if extra_future else None
 
         if data and isinstance(data, dict):
             self.ctx.api_data = data
@@ -612,6 +619,8 @@ class GitHubClient:
             self.ctx.languages = langs
 
         self.ctx.contributors_count = contributors_result
+
+        return extra_result
 
     def _fetch_languages(self) -> tuple[dict, str | None]:
         try:

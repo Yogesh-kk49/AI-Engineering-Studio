@@ -1,4 +1,5 @@
 import logging
+import threading
 import time
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
@@ -6,6 +7,8 @@ from io import BytesIO
 from pathlib import Path
 
 import requests
+from django.conf import settings
+from django.db import close_old_connections
 from django.http import FileResponse, HttpResponse, StreamingHttpResponse
 from rest_framework import status
 from rest_framework.response import Response
@@ -163,10 +166,46 @@ class AnalyzeRepositoryView(APIView):
             scan_mode=scan_mode,
         )
 
-        task = run_repository_analysis.delay(
-            analysis.pk, repo_url, branch, force_reclone, deep_scan, scan_mode, repo_action or "auto",
-        )
-        RepositoryAnalysis.objects.filter(pk=analysis.pk).update(celery_task_id=task.id)
+        # When a real Celery broker (Redis) is configured, .delay() queues
+        # the job onto a worker and this view returns immediately, exactly
+        # as documented above. But when USE_REDIS is off, Celery falls
+        # back to CELERY_TASK_ALWAYS_EAGER — .delay() then runs the *entire*
+        # scan/analyze pipeline synchronously, right here, before this
+        # request can return. That silently breaks the "kicks off an
+        # asynchronous job and returns immediately" contract this view
+        # promises: a Basic Scan that should take ~1-3s instead holds the
+        # HTTP connection open (and the frontend's button spinner frozen)
+        # for however long the whole pipeline takes — several seconds for
+        # Basic, potentially a minute+ for Deep. Running it on a plain
+        # background thread in that case restores the intended behavior
+        # (fast response, progress via polling) without requiring a real
+        # Celery worker process for local/dev use.
+        if getattr(settings, "USE_REDIS", False):
+            task = run_repository_analysis.delay(
+                analysis.pk, repo_url, branch, force_reclone, deep_scan, scan_mode, repo_action or "auto",
+            )
+            task_id = task.id
+        else:
+            def _run_in_background():
+                # A brand-new thread doesn't inherit the request thread's
+                # DB connection — Django would normally open one lazily on
+                # first query, but explicitly closing any stale handle
+                # first (and again after finishing) keeps this consistent
+                # with how a real Celery worker process manages its own
+                # connection lifecycle per task.
+                close_old_connections()
+                try:
+                    run_repository_analysis(
+                        analysis.pk, repo_url, branch, force_reclone, deep_scan, scan_mode, repo_action or "auto",
+                    )
+                finally:
+                    close_old_connections()
+
+            thread = threading.Thread(target=_run_in_background, daemon=True, name=f"analysis-{analysis.pk}")
+            thread.start()
+            task_id = ""
+
+        RepositoryAnalysis.objects.filter(pk=analysis.pk).update(celery_task_id=task_id)
         analysis.refresh_from_db()
 
         return Response(
@@ -175,7 +214,7 @@ class AnalyzeRepositoryView(APIView):
                 "cached": False,
                 "duplicate": False,
                 "message": "Analysis queued.",
-                "task_id": task.id,
+                "task_id": task_id,
                 "data": RepositoryAnalysisSerializer(analysis).data,
             },
             status=status.HTTP_202_ACCEPTED,
@@ -185,7 +224,34 @@ class AnalyzeRepositoryView(APIView):
 class RepositoryAnalysisListView(APIView):
     def get(self, request):
         analyses = RepositoryAnalysis.objects.all()
-        return Response({"count": analyses.count(), "results": RepositoryAnalysisSerializer(analyses, many=True).data})
+        data = RepositoryAnalysisSerializer(analyses, many=True).data
+
+        # A card only reads these five values from `metadata` while
+        # collapsed (project name, file count, status, etc. all come from
+        # plain model fields, already present above) — everything else
+        # (file_tree, security findings, quality hotspots, dependency
+        # lists, architecture patterns, predictions, the AI review write-
+        # up) only ever gets read once a card is expanded. Sending all of
+        # that for *every* analysis on every list load means the payload
+        # scales with the total number of analyses ever run, not with how
+        # many are actually open — a single Deep Scan's full metadata can
+        # be 1MB+ on its own, and this list can have dozens of rows.
+        # AnalysisCard fetches the full detail lazily the first time a
+        # given card is expanded (see `analysis/<id>/` below), so trimming
+        # this here doesn't lose anything the list view itself shows.
+        for row in data:
+            full_meta = row.get("metadata") or {}
+            quality = full_meta.get("quality") or {}
+            security = full_meta.get("security") or {}
+            row["metadata"] = {
+                "primary_language": full_meta.get("primary_language"),
+                "stars": full_meta.get("stars"),
+                "composite_score": full_meta.get("composite_score"),
+                **({"quality": {"overall_score": quality["overall_score"]}} if quality.get("overall_score") is not None else {}),
+                **({"security": {"risk_score": security["risk_score"]}} if security.get("risk_score") is not None else {}),
+            }
+
+        return Response({"count": analyses.count(), "results": data})
 
 
 class RepositoryAnalysisDetailView(APIView):
@@ -289,6 +355,15 @@ class DownloadRepositoryZipView(APIView):
             upstream.iter_content(chunk_size=65536),
             content_type="application/zip",
         )
+        # codeload.github.com often does send a Content-Length even though
+        # it's building the archive on the fly — forward it when present so
+        # the frontend can show a real percentage instead of just a raw
+        # byte count. When GitHub streams it chunked with no known size
+        # (no header), there's nothing to forward and the client falls back
+        # to showing bytes-received instead of a percentage.
+        content_length = upstream.headers.get("Content-Length")
+        if content_length:
+            response["Content-Length"] = content_length
         response["Content-Disposition"] = f'attachment; filename="{filename}"'
         return response
 
@@ -478,11 +553,43 @@ class RepositoryChatView(APIView):
             # saw them in its own earlier reply (preserved in `history`),
             # so only load them fresh on the first message of a
             # conversation; later turns only fetch files newly mentioned.
-            hotspot_paths = (
-                [h.get("file", "").replace("\\", "/") for h in (quality.get("hotspots") or [])[:5] if h.get("file")]
-                if is_first_turn else []
+            # "Hotspot files" here means "whatever the analysis flagged as
+            # needing attention" from the user's point of view — which
+            # includes the security findings shown in the Security tab, not
+            # just the quality analyzer's complexity hotspots. Previously
+            # only the latter were pre-fetched, so a generic follow-up like
+            # "write a test for one of the hotspot files" (referring to a
+            # file the user only ever saw flagged as a security finding)
+            # had no content loaded and the model — correctly, given what
+            # it was actually shown — asked the user to paste the file
+            # itself instead of just writing the test.
+            severity_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+            sorted_findings = sorted(
+                (f for f in (security.get("findings") or []) if f.get("file")),
+                key=lambda f: severity_rank.get(str(f.get("severity", "")).lower(), 4),
             )
+            security_hotspot_paths = []
+            security_hotspot_reasons = {}
+            for f in sorted_findings:
+                p = f.get("file", "").replace("\\", "/")
+                if p in security_hotspot_reasons:
+                    continue
+                security_hotspot_reasons[p] = f"{f.get('severity', '?')} security finding: {f.get('title', '')}"
+                security_hotspot_paths.append(p)
+                if len(security_hotspot_paths) >= 3:
+                    break
+
+            quality_hotspot_paths = [h.get("file", "").replace("\\", "/") for h in (quality.get("hotspots") or [])[:3] if h.get("file")]
             hotspot_reasons = {h.get("file", "").replace("\\", "/"): h.get("reasons", "") for h in (quality.get("hotspots") or [])}
+            hotspot_reasons.update(security_hotspot_reasons)
+
+            combined_paths, seen_paths = [], set()
+            for p in quality_hotspot_paths + security_hotspot_paths:
+                if p and p not in seen_paths:
+                    seen_paths.add(p)
+                    combined_paths.append(p)
+
+            hotspot_paths = combined_paths[:6] if is_first_turn else []
             matched_paths = [p for p in candidate_paths if _mentioned(p)][:5]
 
             with ThreadPoolExecutor(max_workers=max(len(hotspot_paths) + len(matched_paths), 1)) as pool:

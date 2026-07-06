@@ -103,7 +103,10 @@ function TypingDots({ label }) {
 }
 
 function formatTime(date) {
-  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  // Messages restored from localStorage carry their timestamp as an ISO
+  // string (Date objects don't survive JSON.stringify/parse as-is), so
+  // this needs to tolerate both a live Date and a rehydrated string.
+  return new Date(date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
 // How fast the reply "types" itself out once it arrives — tuned to feel
@@ -111,8 +114,49 @@ function formatTime(date) {
 const REVEAL_MS_PER_TICK = 14;
 const REVEAL_CHARS_PER_TICK = 3;
 
+// Chat history persistence — without this, switching tabs (which unmounts
+// this component) or refreshing the page wipes the whole conversation,
+// even though the backend has nothing to do with losing it: it was only
+// ever held in this component's in-memory state. Persisting to
+// localStorage, scoped per analysis, survives both. Capped to the last 40
+// messages so a very long conversation doesn't grow the stored payload
+// unboundedly.
+const CHAT_HISTORY_LIMIT = 40;
+const chatStorageKey = (analysisId) => `ai-chat-history:${analysisId}`;
+
+function loadStoredMessages(analysisId) {
+  if (!analysisId) return [];
+  try {
+    const raw = localStorage.getItem(chatStorageKey(analysisId));
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    // Corrupt or pre-existing incompatible data shouldn't break the tab —
+    // just start fresh, same as if nothing had been saved.
+    return [];
+  }
+}
+
+function saveStoredMessages(analysisId, messages) {
+  if (!analysisId) return;
+  try {
+    // Never persist a message mid-stream (streaming: true) — if the page
+    // is refreshed while the AI is still "typing", we want the reload to
+    // show the complete answer next time it's cached, not a half-revealed
+    // fragment frozen with a blinking caret that will never finish.
+    const settled = messages
+      .filter(m => !m.streaming)
+      .slice(-CHAT_HISTORY_LIMIT);
+    localStorage.setItem(chatStorageKey(analysisId), JSON.stringify(settled));
+  } catch {
+    // Quota exceeded or storage disabled (private browsing, etc.) — chat
+    // still works for the current session, it just won't persist.
+  }
+}
+
 export default function AIChatTab({ analysisId, projectName }) {
-  const [messages, setMessages] = useState([]); // {role, content, at, streaming?}
+  const [messages, setMessages] = useState(() => loadStoredMessages(analysisId)); // {role, content, at, streaming?}
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);      // waiting on the network request
   const [streamingId, setStreamingId] = useState(null); // index of message currently being revealed
@@ -122,6 +166,7 @@ export default function AIChatTab({ analysisId, projectName }) {
   const textareaRef = useRef(null);
   const waitTimersRef = useRef([]);
   const revealIntervalRef = useRef(null);
+  const saveTimerRef = useRef(null);
 
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
@@ -131,7 +176,22 @@ export default function AIChatTab({ analysisId, projectName }) {
     // Clean up any in-flight timers if the tab unmounts mid-response.
     waitTimersRef.current.forEach(clearTimeout);
     clearInterval(revealIntervalRef.current);
+    clearTimeout(saveTimerRef.current);
   }, []);
+
+  // Debounced persistence — the char-by-char reveal effect updates
+  // `messages` every ~14ms while a reply is streaming in, so writing to
+  // localStorage on every single change would mean hundreds of redundant
+  // writes per reply. A short debounce collapses that into one write
+  // shortly after things settle, while still saving quickly enough that a
+  // refresh right after sending a message won't lose it.
+  useEffect(() => {
+    clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(() => {
+      saveStoredMessages(analysisId, messages);
+    }, 400);
+    return () => clearTimeout(saveTimerRef.current);
+  }, [analysisId, messages]);
 
   const autoResize = useCallback(() => {
     const el = textareaRef.current;

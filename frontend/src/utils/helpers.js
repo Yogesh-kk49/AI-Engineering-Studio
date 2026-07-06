@@ -41,6 +41,23 @@ export const formatNumber = (n) => {
   return String(n);
 };
 
+// Human-readable byte size for showing "how much has downloaded so far"
+// when the server doesn't send a Content-Length (so a percentage of total
+// isn't knowable) — the same thing a browser's own download manager shows
+// for a stream of unknown length, rather than leaving the number blank.
+export const formatBytes = (bytes) => {
+  if (bytes == null || bytes <= 0) return '0 KB';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let i = 0;
+  let val = bytes;
+  while (val >= 1024 && i < units.length - 1) {
+    val /= 1024;
+    i += 1;
+  }
+  const decimals = i === 0 ? 0 : val >= 10 ? 1 : 2;
+  return `${val.toFixed(decimals)} ${units[i]}`;
+};
+
 export const timeAgo = (dateStr) => {
   if (!dateStr) return '—';
   const diff = Date.now() - new Date(dateStr).getTime();

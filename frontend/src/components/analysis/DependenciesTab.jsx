@@ -1,8 +1,20 @@
 import React from 'react';
 import { GradeBadge } from '../ui/Badge';
 import { ScoreRing } from '../ui/ScoreRing';
+import { ScanModeNotice } from '../ui/ScanModeNotice';
 
-export default function DependenciesTab({ dependencies }) {
+export default function DependenciesTab({ dependencies, scanMode, onRunDeepScan, deepScanRunning, deepScanProgress }) {
+  // A Basic Scan only does a lightweight dependency read (surfaced
+  // separately as `basic_dependencies`) — this richer health-score/grade
+  // breakdown only exists after a Deep Scan. The default result object
+  // otherwise renders here as a false "0 dependencies, grade F".
+  if (scanMode === 'basic') {
+    return (
+      <ScanModeNotice label="Dependency health breakdown" onRunDeepScan={onRunDeepScan}
+                      running={deepScanRunning} progress={deepScanProgress} />
+    );
+  }
+
   if (!dependencies) return (
     <div style={{ color: 'var(--text-muted)', textAlign: 'center', padding: 48 }}>
       Dependency data not available

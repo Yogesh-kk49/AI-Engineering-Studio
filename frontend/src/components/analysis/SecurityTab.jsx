@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { GradeBadge } from '../ui/Badge';
 import { ScoreRing } from '../ui/ScoreRing';
+import { ScanModeNotice } from '../ui/ScanModeNotice';
 import { dash } from '../../utils/helpers';
 
 const SEV_COLORS = {
@@ -84,7 +85,17 @@ function Finding({ f }) {
   );
 }
 
-export default function SecurityTab({ security }) {
+export default function SecurityTab({ security, scanMode, onRunDeepScan, deepScanRunning, deepScanProgress }) {
+  // A Basic Scan never runs the security scanner — it still returns a
+  // default (zeroed, "no findings") result object rather than null, which
+  // would otherwise render here as a false "no security issues found".
+  if (scanMode === 'basic') {
+    return (
+      <ScanModeNotice label="Security findings" onRunDeepScan={onRunDeepScan}
+                      running={deepScanRunning} progress={deepScanProgress} />
+    );
+  }
+
   if (!security) return (
     <div style={{ color: 'var(--text-muted)', textAlign: 'center', padding: 48 }}>
       Security data not available

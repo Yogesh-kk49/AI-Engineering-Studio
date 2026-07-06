@@ -1,4 +1,5 @@
 import React from 'react';
+import { ScanModeNotice } from '../ui/ScanModeNotice';
 
 const PRIORITY = {
   HIGH:   { color: '#ef4444', bg: 'rgba(239,68,68,0.08)',   label: 'High'   },
@@ -43,7 +44,19 @@ function RecCard({ rec, index }) {
   );
 }
 
-export default function RecommendationsTab({ predictions, quality, security, architecture }) {
+export default function RecommendationsTab({ predictions, quality, security, architecture,
+                                              scanMode, onRunDeepScan, deepScanRunning, deepScanProgress }) {
+  // Every source this tab pulls from (predictions, architecture, security,
+  // quality) is only populated by a Deep Scan. On a Basic Scan they're all
+  // empty defaults, which would otherwise render here as a false
+  // "no major recommendations, this repo is in great shape".
+  if (scanMode === 'basic') {
+    return (
+      <ScanModeNotice label="Recommendations" onRunDeepScan={onRunDeepScan}
+                      running={deepScanRunning} progress={deepScanProgress} />
+    );
+  }
+
   const recs = [];
   (predictions?.top_opportunities || []).forEach(r =>
     recs.push(typeof r === 'string' ? { title: r, priority: 'HIGH' } : r));

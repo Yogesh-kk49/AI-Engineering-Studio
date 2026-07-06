@@ -1,9 +1,20 @@
 import React from 'react';
 import { ScoreRing } from '../ui/ScoreRing';
 import { GradeBadge } from '../ui/Badge';
+import { ScanModeNotice } from '../ui/ScanModeNotice';
 import { scoreColor } from '../../utils/helpers';
 
-export default function HealthScore({ quality }) {
+export default function HealthScore({ quality, scanMode, onRunDeepScan, deepScanRunning, deepScanProgress }) {
+  // A Basic Scan never runs the quality analyzer — it still returns a
+  // default result (score 0, grade F, no dimensions), which would
+  // otherwise render here as a false "0/100, Grade F".
+  if (scanMode === 'basic') {
+    return (
+      <ScanModeNotice label="Health score breakdown" onRunDeepScan={onRunDeepScan}
+                      running={deepScanRunning} progress={deepScanProgress} />
+    );
+  }
+
   const overall = quality?.overall_score;
   const grade   = quality?.overall_grade;
   const dims    = quality?.dimensions || [];
