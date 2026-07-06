@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import api from '../services/api';
 import { normalizeRepoUrl } from '../utils/helpers';
 import { isAnalysisInProgress } from '../hooks/useAnalyses';
@@ -13,7 +13,7 @@ const STAGE_LABELS = {
   'Generating Report': 'Reporting…',
 };
 
-export default function RepositoryForm({ onAnalysisStarted, toast, findExistingByUrl, onAlreadyScanned }) {
+export default function RepositoryForm({ onAnalysisStarted, toast, findExistingByUrl, onAlreadyScanned, onScanModeChange }) {
   const [repoUrl, setRepoUrl]   = useState('');
   const [loading, setLoading]   = useState(false);
   // "basic"  – GitHub-API-only scan, never clones. Fast (~1-5s).
@@ -28,6 +28,14 @@ export default function RepositoryForm({ onAnalysisStarted, toast, findExistingB
   const [duplicatePrompt, setDuplicatePrompt] = useState(null); // { repoUrl, options, data }
   const pollRef   = useRef(null);
   const trackedId = useRef(null); // id of the row we're currently polling, once known
+
+  // Lets the parent (Dashboard) know which mode is currently selected, so
+  // it can show an accurate time estimate instead of a generic one that
+  // doesn't change with the mode actually picked here.
+  useEffect(() => {
+    onScanModeChange?.(scanMode);
+  }, [scanMode, onScanModeChange]);
+
 
   const stopPolling = useCallback(() => {
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }

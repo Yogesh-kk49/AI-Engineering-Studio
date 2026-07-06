@@ -54,6 +54,7 @@ export default function Dashboard() {
   const { toasts, removeToast, success, error: toastError, info } = useToast();
   const { analyses, loading, error, refresh, deleteAnalysis, patchAnalysis } = useAnalyses();
   const [search, setSearch] = useState('');
+  const [scanMode, setScanMode] = useState('basic'); // tracks the mode currently selected in RepositoryForm, so the time estimate below matches it
   const toast = { success, error: toastError, info };
 
   // ── Display order ───────────────────────────────────────────────────
@@ -227,9 +228,13 @@ export default function Dashboard() {
               toast={toast}
               findExistingByUrl={findExistingByUrl}
               onAlreadyScanned={handleAlreadyScanned}
+              onScanModeChange={setScanMode}
             />
             <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 10 }}>
-              Works with any public GitHub repository. Analysis takes 30–90 seconds.
+              Works with any public GitHub repository.{' '}
+              {scanMode === 'deep'
+                ? 'Deep Scan takes 30–90+ seconds depending on repo size.'
+                : 'Basic Scan takes 1–5 seconds — no cloning required.'}
             </p>
           </div>
         </div>

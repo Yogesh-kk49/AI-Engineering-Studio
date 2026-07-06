@@ -4,7 +4,10 @@ import api from '../services/api';
 // Backend never sends a status literally called "Pending" — it moves through
 // these stages instead. Anything not in this terminal set is still running.
 const TERMINAL_STATUSES = ['Completed', 'Failed'];
-export const isAnalysisInProgress = (a) => !TERMINAL_STATUSES.includes(a.status);
+export const isAnalysisInProgress = (a) => {
+  if (!a || !a.status) return false;
+  return !TERMINAL_STATUSES.includes(a.status);
+};
 
 export function useAnalyses() {
   const [analyses, setAnalyses] = useState([]);
@@ -19,16 +22,38 @@ export function useAnalyses() {
   const analysesRef = useRef([]);
   useEffect(() => { analysesRef.current = analyses; }, [analyses]);
 
-  const fetchAll = useCallback(async () => {
+  const fetchAll = useCallback(async (page = 1) => {
     try {
-      const res = await api.get('analysis/');
-      const results = res.data.results || [];
+      const res = await api.get('analysis/', { 
+        params: { 
+          page, 
+          page_size: 20 
+        } 
+      });
+
+      console.log("API DATA:", res.data);
+
+      const results = Array.isArray(res.data)
+        ? res.data
+        : res.data.results || [];
+
       setAnalyses(results);
       setError(null);
+
       return results;
-    } catch {
-      setError('Cannot connect to backend on port 8000. Is the server running?');
+
+    } catch (err) {
+
+      console.error("API ERROR:", err);
+
+      setError(
+        err.response?.data?.message ||
+        err.message ||
+        "Something went wrong"
+      );
+
       return [];
+
     } finally {
       setLoading(false);
     }

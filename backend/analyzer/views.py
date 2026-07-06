@@ -222,8 +222,27 @@ class AnalyzeRepositoryView(APIView):
 
 
 class RepositoryAnalysisListView(APIView):
+    DEFAULT_PAGE_SIZE = 20
+    MAX_PAGE_SIZE = 100
+
     def get(self, request):
-        analyses = RepositoryAnalysis.objects.all()
+        try:
+            page = max(1, int(request.query_params.get("page", 1)))
+        except ValueError:
+            page = 1
+        try:
+            page_size = int(request.query_params.get("page_size", self.DEFAULT_PAGE_SIZE))
+        except ValueError:
+            page_size = self.DEFAULT_PAGE_SIZE
+        page_size = max(1, min(page_size, self.MAX_PAGE_SIZE))
+
+        queryset = RepositoryAnalysis.objects.all()
+        total_count = queryset.count()
+
+        start = (page - 1) * page_size
+        end = start + page_size
+        analyses = queryset[start:end]
+
         data = RepositoryAnalysisSerializer(analyses, many=True).data
 
         # A card only reads these five values from `metadata` while
@@ -251,7 +270,13 @@ class RepositoryAnalysisListView(APIView):
                 **({"security": {"risk_score": security["risk_score"]}} if security.get("risk_score") is not None else {}),
             }
 
-        return Response({"count": analyses.count(), "results": data})
+        return Response({
+            "count": total_count,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": (total_count + page_size - 1) // page_size if total_count else 0,
+            "results": data,
+        })
 
 
 class RepositoryAnalysisDetailView(APIView):

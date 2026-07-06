@@ -46,3 +46,13 @@ build/
 # OS files
 .DS_Store
 Thumbs.db
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# Test coverage
+.coverage
+htmlcov/
+
+# Cloned repos (if REPO_CLONE_DIR ever points inside the project instead of tempdir)
+ai_studio_repos/

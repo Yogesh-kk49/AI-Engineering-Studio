@@ -775,16 +775,18 @@ class GitHubClient:
             )
             resp.raise_for_status()
 
-            # NOTE: a streaming-extraction variant (reading straight from
-            # resp.raw with tarfile mode "r|gz") was tried here to overlap
-            # download and extraction, but it hung indefinitely on a real
-            # large-repo download in practice — likely a urllib3/Windows
-            # socket interaction with reading a raw stream inside a
-            # sequential tarfile reader. Reliability matters more than the
-            # marginal speed gain, so this goes back to fully downloading
-            # into memory first, then extracting — the same approach that
-            # was already proven to work correctly across every test so far.
-            with tarfile.open(fileobj=io.BytesIO(resp.content), mode="r:gz") as tar:
+            MAX_TARBALL_BYTES = 500 * 1024 * 1024  # 500MB cap
+            content_length = resp.headers.get("Content-Length")
+            if content_length and int(content_length) > MAX_TARBALL_BYTES:
+                raise ValueError(f"Repository archive too large ({int(content_length) / 1_000_000:.0f}MB > 500MB cap).")
+
+            downloaded = bytearray()
+            for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                downloaded.extend(chunk)
+                if len(downloaded) > MAX_TARBALL_BYTES:
+                    raise ValueError("Repository archive exceeded 500MB cap during download.")
+
+            with tarfile.open(fileobj=io.BytesIO(bytes(downloaded)), mode="r:gz") as tar:
                 members = tar.getmembers()
                 if not members:
                     raise ValueError("Downloaded archive was empty.")
