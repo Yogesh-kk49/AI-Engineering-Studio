@@ -58,31 +58,39 @@ export default function RepositoryForm({ onAnalysisStarted, toast, findExistingB
   // poll only GET /api/analysis/<id>/progress/, which returns a handful
   // of scalar fields — same lightweight endpoint the step tracker already
   // uses. That's a response measured in bytes, not megabytes.
-  const startPolling = useCallback((submittedUrl, submittedAt) => {
+  const startPolling = useCallback((submittedUrl, submittedAt, onTerminal) => {
     stopPolling();
     trackedId.current = null;
     pollRef.current = setInterval(async () => {
       try {
+        let row = null;
         if (trackedId.current == null) {
           // Not found yet — match by url + recency until we lock onto an
           // id. This one list call is unavoidable (we don't have an id
           // yet), but it happens at most a couple of times, not every tick.
           const res = await api.get('analysis/');
           const rows = res.data.results || [];
-          const row = rows
+          row = rows
             .filter(r => r.repo_url === submittedUrl && new Date(r.created_at) >= submittedAt)
             .sort((a, b) => b.id - a.id)[0];
-          if (row) {
-            trackedId.current = row.id;
-            setStage(row.status);
-            setPercent(row.progress_percent ?? 0);
-          }
-          return;
+          if (row) trackedId.current = row.id;
+        } else {
+          const res = await api.get(`analysis/${trackedId.current}/progress/`);
+          row = res.data;
         }
 
-        const res = await api.get(`analysis/${trackedId.current}/progress/`);
-        setStage(res.data.status);
-        setPercent(res.data.progress_percent ?? 0);
+        if (!row) return;
+        setStage(row.status);
+        setPercent(row.progress_percent ?? 0);
+
+        // The job has actually finished (or failed) server-side — this is
+        // the only point at which it's accurate to tell the user their
+        // scan is "completed", rather than saying so the instant the
+        // button is clicked while the background job has barely started.
+        if (row.status === 'Completed' || row.status === 'Failed') {
+          stopPolling();
+          onTerminal?.(row);
+        }
       } catch {
         // transient — keep trying, the next tick will retry
       }
@@ -97,7 +105,13 @@ export default function RepositoryForm({ onAnalysisStarted, toast, findExistingB
     setStage('Queued');
     setPercent(0);
     const submittedAt = new Date();
-    startPolling(trimmed, submittedAt);
+    const modeLabel = scanMode === 'deep' ? 'Deep scan' : 'Basic scan';
+
+    const finishUp = () => {
+      setLoading(false);
+      setStage('');
+      setPercent(0);
+    };
 
     try {
       const res = await api.post('analyze/', {
@@ -107,25 +121,39 @@ export default function RepositoryForm({ onAnalysisStarted, toast, findExistingB
       if (res.data.duplicate) {
         // Repository already cloned on disk from an earlier Deep Scan —
         // ask the user how to proceed instead of guessing.
-        stopPolling();
-        setLoading(false);
-        setStage('');
-        setPercent(0);
+        finishUp();
         setDuplicatePrompt({ repoUrl: trimmed, options: res.data.options, data: res.data.data });
         return;
       }
 
       setRepoUrl('');
-      const modeLabel = scanMode === 'deep' ? 'Deep scan' : 'Basic scan';
-      toast?.success(`${modeLabel} ${res.data.cached ? 'loaded from cache' : 'completed'} for ${res.data.data?.project_name || 'repository'}`);
       onAnalysisStarted?.(res.data.data);
+
+      if (res.data.cached) {
+        // Genuinely already complete — nothing to poll for, safe to say
+        // so immediately.
+        toast?.success(`${modeLabel} loaded from cache for ${res.data.data?.project_name || 'repository'}`);
+        finishUp();
+        return;
+      }
+
+      // Job is queued and running in the background. Let the user know
+      // it's started, then keep polling — the "completed" toast only
+      // fires once the backend actually reports a terminal status.
+      toast?.info(`${modeLabel} started for ${res.data.data?.project_name || 'repository'}…`);
+      startPolling(trimmed, submittedAt, (finalRow) => {
+        finishUp();
+        const projectName = res.data.data?.project_name || 'repository';
+        if (finalRow.status === 'Failed') {
+          toast?.error(`${modeLabel} failed for ${projectName}.`);
+        } else {
+          toast?.success(`${modeLabel} completed for ${projectName}`);
+        }
+      });
     } catch (err) {
-      toast?.error(err?.response?.data?.error || 'Failed to start analysis.');
-    } finally {
       stopPolling();
-      setLoading(false);
-      setStage('');
-      setPercent(0);
+      finishUp();
+      toast?.error(err?.response?.data?.error || 'Failed to start analysis.');
     }
   };
 

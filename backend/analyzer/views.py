@@ -22,6 +22,7 @@ from .services.github_client import (
     fetch_file_content,
 )
 from .tasks import run_repository_analysis
+from .throttles import BasicScanRateThrottle, DeepScanRateThrottle
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,11 @@ class AnalyzeRepositoryView(APIView):
     force_reclone.
     """
 
+    def get_throttles(self):
+        scan_mode = (self.request.data.get("scan_mode") or "basic").strip().lower()
+        throttle_cls = DeepScanRateThrottle if scan_mode == "deep" else BasicScanRateThrottle
+        return [throttle_cls()]
+
     def post(self, request):
         repo_url = request.data.get("repo_url", "").strip()
         branch = request.data.get("branch", "").strip()
@@ -97,6 +103,7 @@ class AnalyzeRepositoryView(APIView):
             if latest_sha:
                 cached = (
                     RepositoryAnalysis.objects.filter(
+                        user=request.user,
                         repo_url=repo_url, branch=branch, commit_sha=latest_sha,
                         scan_mode=scan_mode, status="Completed",
                     )
@@ -132,6 +139,7 @@ class AnalyzeRepositoryView(APIView):
         if scan_mode == "deep" and not repo_action:
             existing_deep = (
                 RepositoryAnalysis.objects.filter(
+                    user=request.user,
                     repo_url=repo_url, branch=branch, scan_mode="deep",
                     status="Completed",
                 )
@@ -156,6 +164,7 @@ class AnalyzeRepositoryView(APIView):
                 )
 
         analysis = RepositoryAnalysis.objects.create(
+            user=request.user,
             repo_url=repo_url,
             branch=branch,
             project_name=project_name,
@@ -236,7 +245,7 @@ class RepositoryAnalysisListView(APIView):
             page_size = self.DEFAULT_PAGE_SIZE
         page_size = max(1, min(page_size, self.MAX_PAGE_SIZE))
 
-        queryset = RepositoryAnalysis.objects.all()
+        queryset = RepositoryAnalysis.objects.filter(user=request.user)
         total_count = queryset.count()
 
         start = (page - 1) * page_size
@@ -279,17 +288,58 @@ class RepositoryAnalysisListView(APIView):
         })
 
 
+class RepositoryTrendView(APIView):
+    """
+    GET /api/analysis/trend/?repo_url=<url>
+
+    Returns the historical composite/quality/security scores for every
+    completed analysis of one repository, oldest first, so the frontend
+    can chart how a repo has trended over successive scans.
+    """
+
+    def get(self, request):
+        repo_url = (request.query_params.get("repo_url") or "").strip()
+        if not repo_url:
+            return Response(
+                {"error": "repo_url query parameter is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        analyses = (
+            RepositoryAnalysis.objects.filter(
+                user=request.user, repo_url=repo_url, status="Completed",
+            )
+            .order_by("created_at")
+        )
+
+        points = []
+        for analysis in analyses:
+            meta = analysis.metadata or {}
+            quality = meta.get("quality") or {}
+            security = meta.get("security") or {}
+            points.append({
+                "id": analysis.pk,
+                "commit_sha": analysis.commit_sha,
+                "created_at": analysis.created_at,
+                "composite_score": meta.get("composite_score"),
+                "quality_score": quality.get("overall_score"),
+                "security_risk_score": security.get("risk_score"),
+            })
+
+        return Response({"repo_url": repo_url, "points": points})
+
+
 class RepositoryAnalysisDetailView(APIView):
     def get(self, request, pk):
         try:
-            analysis = RepositoryAnalysis.objects.get(pk=pk)
+            analysis = RepositoryAnalysis.objects.get(pk=pk, user=request.user)
         except RepositoryAnalysis.DoesNotExist:
             return Response({"error": "Not found."}, status=status.HTTP_404_NOT_FOUND)
         return Response(RepositoryAnalysisSerializer(analysis).data)
 
     def delete(self, request, pk):
         try:
-            RepositoryAnalysis.objects.get(pk=pk).delete()
+            RepositoryAnalysis.objects.get(pk=pk, user=request.user).delete()
         except RepositoryAnalysis.DoesNotExist:
             return Response({"error": "Not found."}, status=status.HTTP_404_NOT_FOUND)
         return Response(status=status.HTTP_204_NO_CONTENT)
@@ -309,7 +359,7 @@ class RepositoryAnalysisProgressView(APIView):
             analysis = RepositoryAnalysis.objects.only(
                 "id", "status", "progress_percent", "progress_message",
                 "error_message", "started_at", "completed_at",
-            ).get(pk=pk)
+            ).get(pk=pk, user=request.user)
         except RepositoryAnalysis.DoesNotExist:
             return Response({"error": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
@@ -342,7 +392,7 @@ class DownloadRepositoryZipView(APIView):
 
     def get(self, request, pk):
         try:
-            analysis = RepositoryAnalysis.objects.get(pk=pk)
+            analysis = RepositoryAnalysis.objects.get(pk=pk, user=request.user)
         except RepositoryAnalysis.DoesNotExist:
             return Response({"error": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
@@ -447,7 +497,7 @@ class AnalysisFileContentView(APIView):
 
     def get(self, request, pk):
         try:
-            analysis = RepositoryAnalysis.objects.get(pk=pk)
+            analysis = RepositoryAnalysis.objects.get(pk=pk, user=request.user)
         except RepositoryAnalysis.DoesNotExist:
             return Response({"error": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
@@ -502,7 +552,7 @@ class RepositoryChatView(APIView):
 
     def post(self, request, pk):
         t_start = time.monotonic()
-        analysis, error_response = _get_completed_analysis_or_error(pk)
+        analysis, error_response = _get_completed_analysis_or_error(pk, request.user)
         if error_response:
             return error_response
 
@@ -667,11 +717,11 @@ class RepositoryChatView(APIView):
         return Response({"reply": result["reply"]})
 
 
-def _get_completed_analysis_or_error(pk):
+def _get_completed_analysis_or_error(pk, user):
     """Shared lookup for the two export views below — both need a
     Completed analysis with metadata to build a report from."""
     try:
-        analysis = RepositoryAnalysis.objects.get(pk=pk)
+        analysis = RepositoryAnalysis.objects.get(pk=pk, user=user)
     except RepositoryAnalysis.DoesNotExist:
         return None, Response({"error": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
@@ -689,7 +739,7 @@ class ExportMarkdownView(APIView):
     Markdown summary report (scores, findings, architecture, recommendations)."""
 
     def get(self, request, pk):
-        analysis, error = _get_completed_analysis_or_error(pk)
+        analysis, error = _get_completed_analysis_or_error(pk, request.user)
         if error:
             return error
 
@@ -711,7 +761,7 @@ class ExportPdfView(APIView):
     printable document."""
 
     def get(self, request, pk):
-        analysis, error = _get_completed_analysis_or_error(pk)
+        analysis, error = _get_completed_analysis_or_error(pk, request.user)
         if error:
             return error
 

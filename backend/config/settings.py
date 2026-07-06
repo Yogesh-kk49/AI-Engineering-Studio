@@ -46,6 +46,7 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     "corsheaders",
     "rest_framework",
+    "rest_framework.authtoken",
     "architect",
 
     "accounts",
@@ -248,3 +249,26 @@ else:
             "TIMEOUT": 60 * 30,
         }
     }
+
+# ──────────────────────────────────────────────────────────────────────────
+# Django REST Framework — token auth + per-user isolation
+# ──────────────────────────────────────────────────────────────────────────
+# Every /api/ endpoint (aside from plain Django views like /api/system/
+# status/) requires a valid auth token by default, and views additionally
+# filter querysets by request.user so one account can never see another's
+# analyses. See analyzer/throttles.py for the scan-specific rate limits
+# referenced below.
+
+REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "rest_framework.authentication.TokenAuthentication",
+        "rest_framework.authentication.SessionAuthentication",
+    ],
+    "DEFAULT_PERMISSION_CLASSES": [
+        "rest_framework.permissions.IsAuthenticated",
+    ],
+    "DEFAULT_THROTTLE_RATES": {
+        "basic_scan": "20/hour",
+        "deep_scan": "5/hour",
+    },
+}

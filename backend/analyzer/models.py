@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.db import models
 
 
@@ -7,6 +8,16 @@ class RepositoryAnalysis(models.Model):
     the live progress of the background Celery pipeline so the frontend
     can render a step-by-step progress tracker instead of a spinner.
     """
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="analyses",
+        null=True,
+        blank=True,
+        help_text="Owner of this analysis. Nullable for legacy rows created "
+                   "before per-user isolation was added.",
+    )
 
     # Every stage the async pipeline moves through, in order. Mirrors the
     # workflow requested by product:
@@ -97,7 +108,13 @@ class RepositoryAnalysis(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        ordering = ["-created_at"]
+        # `-id` is a tiebreaker: on platforms with coarser datetime
+        # resolution (notably Windows), two rows created back-to-back can
+        # end up with the exact same `created_at` value, making "newest
+        # first" ambiguous on `-created_at` alone. Since id is always
+        # monotonically increasing with creation order, it resolves ties
+        # the same way `created_at` intends to.
+        ordering = ["-created_at", "-id"]
         indexes = [
             models.Index(fields=["repo_url", "branch", "commit_sha"]),
         ]
