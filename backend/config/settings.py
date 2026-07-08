@@ -23,6 +23,36 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+# ──────────────────────────────────────────────────────────────────────────
+# Email (OTP login codes are sent through this) — Gmail SMTP by default
+# ──────────────────────────────────────────────────────────────────────────
+# Gmail rejects plain account-password SMTP logins, so EMAIL_HOST_PASSWORD
+# must be a Gmail "App Password", not the account's normal login password:
+#   Google Account → Security → 2-Step Verification → App passwords
+# Set these in backend/.env:
+#   EMAIL_HOST_USER=youraddress@gmail.com
+#   EMAIL_HOST_PASSWORD=xxxx xxxx xxxx xxxx   (the 16-char App Password)
+#   DEFAULT_FROM_EMAIL=youraddress@gmail.com  (optional, defaults to the above)
+EMAIL_HOST = os.getenv("EMAIL_HOST", "smtp.gmail.com")
+EMAIL_PORT = int(os.getenv("EMAIL_PORT", "587"))
+EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS", "True") == "True"
+EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "")
+EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
+DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", EMAIL_HOST_USER)
+
+# Without real Gmail credentials configured, sending would just fail on
+# every login attempt — fall back to printing the email (OTP code and
+# all) to the backend's console instead, so local dev still works without
+# needing a Gmail account set up.
+EMAIL_BACKEND = os.getenv("EMAIL_BACKEND", "").strip() or (
+    "django.core.mail.backends.smtp.EmailBackend"
+    if EMAIL_HOST_USER and EMAIL_HOST_PASSWORD
+    else "django.core.mail.backends.console.EmailBackend"
+)
+
+# How long an emailed OTP stays valid for. See accounts/models.py.
+OTP_EXPIRY_MINUTES = int(os.getenv("OTP_EXPIRY_MINUTES", "10"))
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
@@ -270,5 +300,8 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_RATES": {
         "basic_scan": "20/hour",
         "deep_scan": "5/hour",
+        # OTP login endpoints — see accounts/throttles.py.
+        "otp_request": "5/hour",
+        "otp_verify": "20/hour",
     },
 }

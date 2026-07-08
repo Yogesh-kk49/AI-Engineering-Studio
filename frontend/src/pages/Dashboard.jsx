@@ -1,4 +1,5 @@
 import React, { useState, useCallback, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import RepositoryForm from '../components/RepositoryForm';
 import AnalysisCard   from '../components/AnalysisCard';
 import { SkeletonCard } from '../components/ui/Skeleton';
@@ -7,6 +8,7 @@ import { useToast }    from '../hooks/useToast';
 import { useAnalyses, isAnalysisInProgress } from '../hooks/useAnalyses';
 import { normalizeRepoUrl } from '../utils/helpers';
 import ThemeToggle from '../components/ui/ThemeToggle';
+import { useAuth } from '../context/AuthContext';
 
 function EmptyState() {
   return (
@@ -51,6 +53,12 @@ function ErrorState({ message }) {
 }
 
 export default function Dashboard() {
+  const { email, logout } = useAuth();
+  const navigate = useNavigate();
+  const handleLogout = useCallback(async () => {
+    await logout();
+    navigate('/', { replace: true });
+  }, [logout, navigate]);
   const { toasts, removeToast, success, error: toastError, info } = useToast();
   const { analyses, loading, error, refresh, deleteAnalysis, patchAnalysis } = useAnalyses();
   const [search, setSearch] = useState('');
@@ -187,7 +195,30 @@ export default function Dashboard() {
             </div>
           )}
 
-          <div style={{ marginLeft: 'auto' }}>
+          <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 12 }}>
+            {email && (
+              <span style={{ fontSize: 12, color: 'var(--text-muted)',
+                background: 'var(--bg-card-hover)', border: '1px solid var(--border)',
+                padding: '5px 12px', borderRadius: 20, display: 'flex',
+                alignItems: 'center', gap: 6, maxWidth: 220, overflow: 'hidden' }}>
+                <span style={{ width: 6, height: 6, borderRadius: '50%',
+                  background: 'var(--status-done)', flexShrink: 0 }} />
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {email}
+                </span>
+              </span>
+            )}
+            <button
+              onClick={handleLogout}
+              title="Log out"
+              style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-muted)',
+                background: 'transparent', border: '1px solid var(--border)',
+                borderRadius: 8, padding: '6px 12px', transition: 'var(--transition)' }}
+              onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--grade-f)'; e.currentTarget.style.color = 'var(--grade-f)'; }}
+              onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--text-muted)'; }}
+            >
+              Log out
+            </button>
             <ThemeToggle />
           </div>
         </div>
