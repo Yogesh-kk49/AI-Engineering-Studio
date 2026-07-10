@@ -1,7 +1,13 @@
 import axios from "axios";
 
+// Was hardcoded to "http://localhost:8000/api/", which meant every
+// non-local deployment (staging, prod, even a teammate's machine on a
+// different port) silently broke. Vite exposes .env vars prefixed with
+// VITE_ at build time via import.meta.env — see .env.example.
+const BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8000/api/";
+
 const api = axios.create({
-    baseURL: "http://localhost:8000/api/",
+    baseURL: BASE_URL,
     timeout: 300000, // 5 minutes — analysis takes time (clone + 5 services)
 });
 

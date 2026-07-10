@@ -12,6 +12,10 @@ import FileFlowChart from './analysis/FileFlowChart';
 import DependenciesTab   from './analysis/DependenciesTab';
 import RecommendationsTab from './analysis/RecommendationsTab';
 import AIChatTab from './analysis/AIChatTab';
+import TrendTab from './analysis/TrendTab';
+import UpdatesTab from './analysis/UpdatesTab';
+import CompareTab from './analysis/CompareTab';
+import ShareBadge from './ui/ShareBadge';
 import { isAnalysisInProgress } from '../hooks/useAnalyses';
 import api from '../services/api';
 
@@ -26,6 +30,9 @@ const TABS = [
   { id: 'security',         label: 'Security'        },
   { id: 'dependencies',     label: 'Dependencies'    },
   { id: 'recommendations',  label: 'Recommendations' },
+  { id: 'trend',            label: 'Trend'           },
+  { id: 'updates',          label: 'Updates'         },
+  { id: 'compare',          label: 'Compare'         },
 ];
 
 export default function AnalysisCard({ analysis, onDelete, onRescanned, onFullDataLoaded, toast }) {
@@ -41,6 +48,11 @@ export default function AnalysisCard({ analysis, onDelete, onRescanned, onFullDa
   const [exportMenuPos, setExportMenuPos] = useState(null);
   const exportBtnRef = useRef(null);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
+  // Set by SecurityTab's "Explain & fix" button; consumed once by
+  // AIChatTab (which clears it back to null via onPendingConsumed) so a
+  // finding's question gets asked automatically after switching to Chat.
+  const [pendingChatQuestion, setPendingChatQuestion] = useState(null);
   const [rescanning, setRescanning] = useState(false);
   // Rescanning has no bytes to measure (it's a single JSON response, not a
   // file stream), so there's no real percentage to report the way the
@@ -275,7 +287,9 @@ export default function AnalysisCard({ analysis, onDelete, onRescanned, onFullDa
       <div
         onClick={() => !isPending && setOpen(o => !o)}
         style={{ padding: '18px 20px', display: 'flex', alignItems: 'center', gap: 16,
-                 cursor: isPending ? 'default' : 'pointer' }}
+                 cursor: isPending ? 'default' : 'pointer', transition: 'var(--transition)' }}
+        onMouseEnter={e => { if (!isPending) e.currentTarget.style.background = 'var(--bg-card-hover)'; }}
+        onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
       >
         {/* Icon */}
         <div style={{ width: 40, height: 40, borderRadius: 10, flexShrink: 0,
@@ -446,6 +460,24 @@ export default function AnalysisCard({ analysis, onDelete, onRescanned, onFullDa
             </div>
           )}
 
+          {!isPending && !isFailed && analysis.scan_mode === 'basic' && (
+            <button
+              onClick={handleRunDeepScan}
+              disabled={rescanning}
+              title="Basic Scan only reads GitHub API metadata — run Deep Scan to clone the repo and unlock Security, Health, Trend, Updates & Compare"
+              style={{ width: 30, height: 30, borderRadius: 6, background: 'transparent',
+                border: '1px solid var(--border)', color: rescanning ? 'var(--text-muted)' : 'var(--accent)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                cursor: rescanning ? 'default' : 'pointer', transition: 'var(--transition)' }}
+              onMouseEnter={e => { if (!rescanning) { e.currentTarget.style.borderColor = 'var(--accent)'; } }}
+              onMouseLeave={e => { if (!rescanning) { e.currentTarget.style.borderColor = 'var(--border)'; } }}
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+              </svg>
+            </button>
+          )}
+
           {!isPending && !isFailed && (
             <div style={{ position: 'relative' }}>
               <button
@@ -502,6 +534,29 @@ export default function AnalysisCard({ analysis, onDelete, onRescanned, onFullDa
             </div>
           )}
 
+          {!isPending && !isFailed && (
+            <button
+              onClick={() => setShareOpen(true)}
+              title="Share badge"
+              aria-label="Share this analysis as an embeddable badge"
+              style={{ width: 30, height: 30, borderRadius: 6, background: 'transparent',
+                border: '1px solid var(--border)', color: 'var(--text-muted)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                cursor: 'pointer', transition: 'var(--transition)' }}
+              onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.color = 'var(--accent)'; }}
+              onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--text-muted)'; }}
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+                   stroke="currentColor" strokeWidth="2">
+                <circle cx="18" cy="5" r="3"/>
+                <circle cx="6" cy="12" r="3"/>
+                <circle cx="18" cy="19" r="3"/>
+                <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/>
+                <line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
+              </svg>
+            </button>
+          )}
+
           <button
             onClick={handleDelete}
             title="Delete"
@@ -545,7 +600,7 @@ export default function AnalysisCard({ analysis, onDelete, onRescanned, onFullDa
       {open && (
         <div style={{ borderTop: '1px solid var(--border)', animation: 'slideDown 0.2s ease' }}>
           {/* Tab bar */}
-          <div style={{ display: 'flex', borderBottom: '1px solid var(--border)',
+          <div className="tab-bar-scroll" style={{ display: 'flex', borderBottom: '1px solid var(--border)',
                         padding: '0 20px', overflowX: 'auto', background: 'var(--bg-subtle)' }}>
             {TABS.map(tab => (
               <button key={tab.id} onClick={() => setActiveTab(tab.id)} style={{
@@ -562,7 +617,7 @@ export default function AnalysisCard({ analysis, onDelete, onRescanned, onFullDa
           </div>
 
           {/* Tab content */}
-          <div style={{ padding: 24, animation: 'fadeIn 0.2s ease', background: 'var(--bg-card)' }}>
+          <div key={activeTab} style={{ padding: 24, animation: 'fadeIn 0.2s ease', background: 'var(--bg-card)' }}>
             {loadingFullData && !m.file_tree ? (
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center',
                             gap: 10, padding: 48, color: 'var(--text-muted)', fontSize: 13 }}>
@@ -574,7 +629,9 @@ export default function AnalysisCard({ analysis, onDelete, onRescanned, onFullDa
             ) : (<>
             {activeTab === 'overview'        && <OverviewTab analysis={analysis} />}
             {activeTab === 'chat' && (
-              <AIChatTab analysisId={analysis.id} projectName={analysis.project_name} />
+              <AIChatTab analysisId={analysis.id} projectName={analysis.project_name}
+                         pendingQuestion={pendingChatQuestion}
+                         onPendingConsumed={() => setPendingChatQuestion(null)} />
             )}
             {activeTab === 'health'          && (
               <HealthScore quality={m.quality} scanMode={analysis.scan_mode}
@@ -591,7 +648,8 @@ export default function AnalysisCard({ analysis, onDelete, onRescanned, onFullDa
             {activeTab === 'security'        && (
               <SecurityTab security={m.security} scanMode={analysis.scan_mode}
                            onRunDeepScan={handleRunDeepScan} deepScanRunning={rescanning}
-                           deepScanProgress={rescanProgress} />
+                           deepScanProgress={rescanProgress}
+                           onExplainFinding={(question) => { setPendingChatQuestion(question); setActiveTab('chat'); }} />
             )}
             {activeTab === 'dependencies'    && (
               <DependenciesTab dependencies={m.dependencies} scanMode={analysis.scan_mode}
@@ -604,9 +662,29 @@ export default function AnalysisCard({ analysis, onDelete, onRescanned, onFullDa
                                   scanMode={analysis.scan_mode} onRunDeepScan={handleRunDeepScan}
                                   deepScanRunning={rescanning} deepScanProgress={rescanProgress} />
             )}
+            {activeTab === 'trend'           && (
+              <TrendTab repoUrl={analysis.repo_url} scanMode={analysis.scan_mode}
+                        onRunDeepScan={handleRunDeepScan} deepScanRunning={rescanning}
+                        deepScanProgress={rescanProgress} />
+            )}
+            {activeTab === 'updates'         && (
+              <UpdatesTab analysis={analysis} scanMode={analysis.scan_mode}
+                          onRunDeepScan={handleRunDeepScan} deepScanRunning={rescanning}
+                          deepScanProgress={rescanProgress} />
+            )}
+            {activeTab === 'compare'         && (
+              <CompareTab analysis={analysis} scanMode={analysis.scan_mode}
+                          onRunDeepScan={handleRunDeepScan} deepScanRunning={rescanning}
+                          deepScanProgress={rescanProgress} />
+            )}
             </>)}
           </div>
         </div>
+      )}
+
+      {shareOpen && (
+        <ShareBadge analysisId={analysis.id} projectName={analysis.project_name}
+                    onClose={() => setShareOpen(false)} />
       )}
 
       {deleteConfirmOpen && (

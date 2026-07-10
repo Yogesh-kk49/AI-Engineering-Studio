@@ -22,6 +22,13 @@ logger = logging.getLogger(__name__)
 # inbox even from a single well-behaved client.
 RESEND_COOLDOWN_SECONDS = 30
 
+# NOTE: GuestTokenView has been removed. It was an AllowAny endpoint that
+# handed out a valid API token to a shared "guest" account with zero
+# authentication, which bypassed every OTP throttle in this file and let
+# anyone mint a working token for free. If you need an anonymous/demo
+# mode, build it as a dedicated read-only, heavily-throttled endpoint
+# (see analyzer/badge_view.py for the pattern) rather than a real token.
+
 
 class RequestOTPView(APIView):
     """
@@ -207,25 +214,3 @@ class LogoutView(APIView):
     def post(self, request):
         Token.objects.filter(user=request.user).delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
-
-
-class GuestTokenView(APIView):
-    """
-    POST /api/accounts/guest-token/
-
-    Legacy stopgap from before this app had a real login screen — kept
-    only for local/dev convenience (e.g. hitting the API directly with
-    curl without going through the OTP flow). The frontend no longer
-    calls this; real users now authenticate via RequestOTPView /
-    VerifyOTPView above. Safe to delete entirely once nothing depends on
-    the shared "guest" account anymore.
-    """
-    permission_classes = [AllowAny]
-
-    def post(self, request):
-        user, _ = User.objects.get_or_create(
-            username="guest",
-            defaults={"is_active": True},
-        )
-        token, _ = Token.objects.get_or_create(user=user)
-        return Response({"token": token.key, "username": user.username})

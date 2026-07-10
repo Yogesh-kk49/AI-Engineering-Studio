@@ -62,7 +62,21 @@ SECRET_KEY = os.getenv("SECRET_KEY")
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv("DEBUG") == "True"
 
-ALLOWED_HOSTS = []
+# ──────────────────────────────────────────────────────────────────────────
+# Deployment / hosts
+# ──────────────────────────────────────────────────────────────────────────
+# Previously hardcoded to [], which silently rejects every request once
+# DEBUG=False in production (Django refuses unrecognized Host headers).
+# Comma-separated env var so this works identically across dev/stage/prod
+# without touching code, e.g.:
+#   ALLOWED_HOSTS=api.example.com,www.example.com
+ALLOWED_HOSTS = [
+    h.strip() for h in os.getenv("ALLOWED_HOSTS", "").split(",") if h.strip()
+]
+if DEBUG and not ALLOWED_HOSTS:
+    # Keep local `runserver` working out of the box without requiring an
+    # env var for pure local dev.
+    ALLOWED_HOSTS = ["localhost", "127.0.0.1"]
 
 
 # Application definition
@@ -128,18 +142,8 @@ DATABASES = {
             # access — so this app's own progress polling (a GET request
             # on one thread, reading the analysis row every ~1s) could
             # block, and get blocked by, the analysis pipeline's own
-            # status writes on another thread. Since the eager-mode
-            # pipeline updates progress ~7 times per run and each write
-            # could queue behind an in-flight poll (or vice versa), that
-            # contention was invisible to per-stage timing yet accounted
-            # for the bulk of total wall-clock time (~20s of a 22s run
-            # was unaccounted for by any actual analysis work).
-            #
-            # WAL (Write-Ahead Logging) mode lets reads and writes happen
-            # concurrently instead of serializing them — this is the
-            # standard fix for exactly this pattern. `timeout` (seconds)
-            # is a safety net: how long to wait for a lock before raising
-            # "database is locked" instead of hanging silently.
+            # status writes on another thread. WAL mode lets reads and
+            # writes happen concurrently instead of serializing them.
             "init_command": "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;",
             "timeout": 20,
         },
@@ -189,10 +193,15 @@ STATICFILES_DIRS = [
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
 
+# ──────────────────────────────────────────────────────────────────────────
+# CORS
+# ──────────────────────────────────────────────────────────────────────────
+# Previously hardcoded to localhost only, which would silently break the
+# deployed frontend in production. Comma-separated env var, e.g.:
+#   CORS_ALLOWED_ORIGINS=https://app.example.com,https://example.com
+_default_cors = "http://localhost:5173,http://localhost:3000,http://127.0.0.1:3000"
 CORS_ALLOWED_ORIGINS = [
-    "http://localhost:5173",
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
+    o.strip() for o in os.getenv("CORS_ALLOWED_ORIGINS", _default_cors).split(",") if o.strip()
 ]
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
@@ -284,10 +293,10 @@ else:
 # Django REST Framework — token auth + per-user isolation
 # ──────────────────────────────────────────────────────────────────────────
 # Every /api/ endpoint (aside from plain Django views like /api/system/
-# status/) requires a valid auth token by default, and views additionally
-# filter querysets by request.user so one account can never see another's
-# analyses. See analyzer/throttles.py for the scan-specific rate limits
-# referenced below.
+# status/, and the intentionally-public badge endpoint) requires a valid
+# auth token by default, and views additionally filter querysets by
+# request.user so one account can never see another's analyses. See
+# analyzer/throttles.py for the scan-specific rate limits referenced below.
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
@@ -303,5 +312,32 @@ REST_FRAMEWORK = {
         # OTP login endpoints — see accounts/throttles.py.
         "otp_request": "5/hour",
         "otp_verify": "20/hour",
+        # Public read-only badge endpoint — see analyzer/badge_view.py.
+        "badge": "60/hour",
     },
 }
+
+# ──────────────────────────────────────────────────────────────────────────
+# Production security hardening
+# ──────────────────────────────────────────────────────────────────────────
+# All no-ops in local dev (DEBUG=True) and only take effect once DEBUG is
+# False, which is when a real reverse proxy / TLS terminator is assumed to
+# be in front of this app. Set behind a load balancer that already
+# terminates TLS? Also set SECURE_PROXY_SSL_HEADER via env if needed.
+if not DEBUG:
+    SECURE_SSL_REDIRECT = os.getenv("SECURE_SSL_REDIRECT", "True") == "True"
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    SECURE_HSTS_SECONDS = int(os.getenv("SECURE_HSTS_SECONDS", "31536000"))  # 1 year
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = True
+    SECURE_CONTENT_TYPE_NOSNIFF = True
+    X_FRAME_OPTIONS = "DENY"
+
+    # Needed for Django's own CSRF checks (admin, session-auth endpoints)
+    # when the frontend and API live on different subdomains/ports behind
+    # HTTPS. Comma-separated, e.g.:
+    #   CSRF_TRUSTED_ORIGINS=https://app.example.com
+    CSRF_TRUSTED_ORIGINS = [
+        o.strip() for o in os.getenv("CSRF_TRUSTED_ORIGINS", "").split(",") if o.strip()
+    ]

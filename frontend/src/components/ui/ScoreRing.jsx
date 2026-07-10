@@ -1,12 +1,25 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { scoreColor } from '../../utils/helpers';
 
 export function ScoreRing({ score, size = 80, label, strokeWidth = 7 }) {
   const r      = (size - strokeWidth * 2) / 2;
   const circ   = 2 * Math.PI * r;
-  const pct    = score != null ? Math.min(100, Math.max(0, score)) : 0;
+
+  // Starts at 0 and animates up to the real score right after mount — a
+  // ring that's already full on first paint (which is what a plain
+  // `stroke-dashoffset` transition gives you, since there's no "before"
+  // state to transition from) reads as static rather than as a result
+  // being revealed. The rAF hop is just to let the initial 0% paint apply
+  // before the transition to the real value kicks in.
+  const [displayScore, setDisplayScore] = useState(0);
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => setDisplayScore(score ?? 0));
+    return () => cancelAnimationFrame(raf);
+  }, [score]);
+
+  const pct    = Math.min(100, Math.max(0, displayScore));
   const offset = circ - (pct / 100) * circ;
-  const color  = scoreColor(pct);
+  const color  = scoreColor(Math.min(100, Math.max(0, score ?? 0)));
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>

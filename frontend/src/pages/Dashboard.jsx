@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import RepositoryForm from '../components/RepositoryForm';
 import AnalysisCard   from '../components/AnalysisCard';
@@ -55,15 +55,44 @@ function ErrorState({ message }) {
 export default function Dashboard() {
   const { email, logout } = useAuth();
   const navigate = useNavigate();
+  const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
   const handleLogout = useCallback(async () => {
-    await logout();
-    navigate('/', { replace: true });
+    setLoggingOut(true);
+    try {
+      await logout();
+      navigate('/', { replace: true });
+    } finally {
+      setLoggingOut(false);
+      setLogoutConfirmOpen(false);
+    }
   }, [logout, navigate]);
   const { toasts, removeToast, success, error: toastError, info } = useToast();
   const { analyses, loading, error, refresh, deleteAnalysis, patchAnalysis } = useAnalyses();
   const [search, setSearch] = useState('');
   const [scanMode, setScanMode] = useState('basic'); // tracks the mode currently selected in RepositoryForm, so the time estimate below matches it
   const toast = { success, error: toastError, info };
+
+  // ── One card per repo ───────────────────────────────────────────────
+  // Rescanning a repo used to delete its previous row outright so the
+  // dashboard never showed duplicates. That silently broke the Trend and
+  // Compare tabs — there was never more than one saved scan per repo to
+  // compare against, ever. Every scan is now kept permanently; instead,
+  // *this list* collapses to the most recent scan per repo (by the same
+  // URL-normalization used for duplicate detection elsewhere), so the
+  // dashboard still shows one card per repo while the full history lives
+  // on in the backend for Trend/Compare (and on the dedicated History page).
+  const latestPerRepo = useMemo(() => {
+    const byRepo = new Map();
+    for (const a of analyses) {
+      const key = normalizeRepoUrl(a.repo_url);
+      const existing = byRepo.get(key);
+      if (!existing || new Date(a.created_at) > new Date(existing.created_at)) {
+        byRepo.set(key, a);
+      }
+    }
+    return Array.from(byRepo.values());
+  }, [analyses]);
 
   // ── Display order ───────────────────────────────────────────────────
   // The backend always returns analyses newest-first by created_at, which
@@ -75,27 +104,27 @@ export default function Dashboard() {
 
   useEffect(() => {
     setOrder(prev => {
-      const ids = analyses.map(a => a.id);
+      const ids = latestPerRepo.map(a => a.id);
       const kept = prev.filter(id => ids.includes(id));
       const fresh = ids.filter(id => !kept.includes(id)); // brand-new rows
       return [...fresh, ...kept];
     });
-  }, [analyses]);
+  }, [latestPerRepo]);
 
   const moveToTop = useCallback((id) => {
     setOrder(prev => [id, ...prev.filter(x => x !== id)]);
   }, []);
 
   const orderedAnalyses = order
-    .map(id => analyses.find(a => a.id === id))
+    .map(id => latestPerRepo.find(a => a.id === id))
     .filter(Boolean);
 
   // Finds an existing history entry for a given repo URL, ignoring
   // protocol / "www." / ".git" / trailing-slash / casing differences.
   const findExistingByUrl = useCallback((url) => {
     const norm = normalizeRepoUrl(url);
-    return analyses.find(a => normalizeRepoUrl(a.repo_url) === norm) || null;
-  }, [analyses]);
+    return latestPerRepo.find(a => normalizeRepoUrl(a.repo_url) === norm) || null;
+  }, [latestPerRepo]);
 
   const handleAnalysisStarted = useCallback((data) => {
     refresh();
@@ -111,29 +140,20 @@ export default function Dashboard() {
   //    had, so the backend returned the existing result instantly. Nothing
   //    to clean up — just bump it to the top and say so.
   //  • cached === false → there was a real new commit, so the backend
-  //    cloned + re-ran the full pipeline into a fresh row. Once that lands
-  //    we drop the stale row so each repo keeps a single, current entry.
+  //    cloned + re-ran the full pipeline into a fresh row. The old row is
+  //    kept (not deleted) so Trend/Compare have something to measure
+  //    against — `latestPerRepo` above is what keeps this list showing
+  //    only the newest one.
   const handleRescanned = useCallback(async (newData, oldId, cached) => {
     if (cached) {
       if (newData?.id) moveToTop(newData.id);
       info(`"${newData?.project_name || 'Repository'}" is already up to date — no new commits found.`);
       return;
     }
-    if (newData?.id && newData.id !== oldId) {
-      // Guard against a race: if the old card was acted on twice in quick
-      // succession (e.g. a rescan fired again before this cleanup's
-      // refresh() landed), a previous cycle may have already deleted this
-      // row. Skip the request entirely instead of sending a DELETE for an
-      // id that's already gone.
-      const stillPresent = analyses.some(a => a.id === oldId);
-      if (stillPresent) {
-        await deleteAnalysis(oldId);
-      }
-    }
     await refresh();
     if (newData?.id) moveToTop(newData.id);
     success(`New commits found for "${newData?.project_name || 'repository'}" — re-analyzing now.`);
-  }, [analyses, deleteAnalysis, refresh, moveToTop, success, info]);
+  }, [refresh, moveToTop, success, info]);
 
   const handleDelete = useCallback(async (id) => {
     const ok = await deleteAnalysis(id);
@@ -142,8 +162,8 @@ export default function Dashboard() {
 
   const filtered  = orderedAnalyses.filter(a =>
     !search || a.project_name?.toLowerCase().includes(search.toLowerCase()));
-  const pending   = analyses.filter(isAnalysisInProgress).length;
-  const completed = analyses.filter(a => a.status === 'Completed').length;
+  const pending   = latestPerRepo.filter(isAnalysisInProgress).length;
+  const completed = latestPerRepo.filter(a => a.status === 'Completed').length;
 
   return (
     <div style={{ minHeight: '100vh', background: 'var(--bg)' }}>
@@ -196,6 +216,21 @@ export default function Dashboard() {
           )}
 
           <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 12 }}>
+            <button
+              onClick={() => navigate('/history')}
+              title="View history"
+              style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600,
+                color: 'var(--text-muted)', background: 'transparent', border: '1px solid var(--border)',
+                borderRadius: 8, padding: '6px 12px', cursor: 'pointer', transition: 'var(--transition)' }}
+              onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.color = 'var(--accent)'; }}
+              onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--text-muted)'; }}
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="12" cy="12" r="9"/>
+                <polyline points="12 7 12 12 16 14"/>
+              </svg>
+              History
+            </button>
             {email && (
               <span style={{ fontSize: 12, color: 'var(--text-muted)',
                 background: 'var(--bg-card-hover)', border: '1px solid var(--border)',
@@ -209,7 +244,7 @@ export default function Dashboard() {
               </span>
             )}
             <button
-              onClick={handleLogout}
+              onClick={() => setLogoutConfirmOpen(true)}
               title="Log out"
               style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-muted)',
                 background: 'transparent', border: '1px solid var(--border)',
@@ -271,13 +306,13 @@ export default function Dashboard() {
         </div>
 
         {/* Results */}
-        {analyses.length > 0 && (
+        {latestPerRepo.length > 0 && (
           <div style={{ display: 'flex', justifyContent: 'space-between',
                         alignItems: 'center', marginBottom: 20, gap: 16, flexWrap: 'wrap' }}>
             <h2 style={{ fontSize: 18, fontWeight: 700, color: 'var(--text-heading)' }}>
               Analysis History
               <span style={{ fontSize: 13, fontWeight: 400, color: 'var(--text-muted)', marginLeft: 10 }}>
-                {analyses.length} total
+                {latestPerRepo.length} total
               </span>
             </h2>
             <div style={{ position: 'relative' }}>
@@ -302,7 +337,7 @@ export default function Dashboard() {
         )}
 
         {!loading && error   && <ErrorState message={error} />}
-        {!loading && !error && analyses.length === 0 && <EmptyState />}
+        {!loading && !error && latestPerRepo.length === 0 && <EmptyState />}
 
         {!loading && !error && filtered.length > 0 && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -312,7 +347,7 @@ export default function Dashboard() {
           </div>
         )}
 
-        {!loading && !error && analyses.length > 0 && filtered.length === 0 && (
+        {!loading && !error && latestPerRepo.length > 0 && filtered.length === 0 && (
           <div style={{ textAlign: 'center', padding: 48, color: 'var(--text-muted)' }}>
             No repositories match "<strong style={{ color: 'var(--text)' }}>{search}</strong>"
           </div>
@@ -320,6 +355,56 @@ export default function Dashboard() {
       </main>
 
       <ToastContainer toasts={toasts} onRemove={removeToast} />
+
+      {logoutConfirmOpen && (
+        <div
+          onClick={() => !loggingOut && setLogoutConfirmOpen(false)}
+          role="presentation"
+          style={{ position: 'fixed', inset: 0, background: 'rgba(15,17,23,0.55)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            zIndex: 1000, padding: 24 }}
+        >
+          <div
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="logout-confirm-title"
+            aria-describedby="logout-confirm-desc"
+            onClick={e => e.stopPropagation()}
+            style={{ background: 'var(--bg-card)', borderRadius: 12, width: '100%', maxWidth: 380,
+              boxShadow: '0 20px 60px rgba(0,0,0,0.3)', padding: 24 }}
+          >
+            <h2 id="logout-confirm-title" style={{ fontSize: 16, fontWeight: 700,
+              color: 'var(--text-strong)', marginBottom: 8 }}>
+              Log out?
+            </h2>
+            <p id="logout-confirm-desc" style={{ fontSize: 13, color: 'var(--text-muted)',
+              lineHeight: 1.5, marginBottom: 20 }}>
+              You'll need to verify your email with a new code to sign back in.
+            </p>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+              <button
+                onClick={() => setLogoutConfirmOpen(false)}
+                disabled={loggingOut}
+                style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)',
+                  background: 'transparent', border: '1px solid var(--border)',
+                  borderRadius: 8, padding: '8px 16px', cursor: loggingOut ? 'default' : 'pointer' }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleLogout}
+                disabled={loggingOut}
+                style={{ fontSize: 13, fontWeight: 600, color: '#fff',
+                  background: 'var(--grade-f)', border: 'none',
+                  borderRadius: 8, padding: '8px 16px', cursor: loggingOut ? 'wait' : 'pointer',
+                  opacity: loggingOut ? 0.7 : 1 }}
+              >
+                {loggingOut ? 'Logging out…' : 'Log out'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

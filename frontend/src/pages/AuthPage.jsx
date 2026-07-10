@@ -126,6 +126,23 @@ export default function AuthPage() {
   return (
     <div style={{ minHeight: '100vh', background: 'var(--bg)', display: 'flex',
       alignItems: 'center', justifyContent: 'center', padding: 24, position: 'relative' }}>
+      <button
+        onClick={() => navigate('/')}
+        aria-label="Back to home"
+        style={{ position: 'absolute', top: 24, left: 24, display: 'flex',
+          alignItems: 'center', gap: 6, background: 'none', border: 'none',
+          color: 'var(--text-muted)', fontSize: 13, fontWeight: 600, cursor: 'pointer',
+          padding: '6px 10px', borderRadius: 'var(--radius)', transition: 'var(--transition)' }}
+        onMouseEnter={e => { e.currentTarget.style.color = 'var(--text-strong)'; }}
+        onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-muted)'; }}
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <line x1="19" y1="12" x2="5" y2="12"/>
+          <polyline points="12 19 5 12 12 5"/>
+        </svg>
+        Back
+      </button>
+
       <div style={{ position: 'absolute', top: 24, right: 24 }}>
         <ThemeToggle />
       </div>

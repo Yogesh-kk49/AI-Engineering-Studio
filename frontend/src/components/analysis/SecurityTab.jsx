@@ -8,7 +8,7 @@ const SEV_COLORS = {
   CRITICAL: '#ef4444', HIGH: '#f97316', MEDIUM: '#f59e0b', LOW: '#3b82f6', INFO: '#6b7280',
 };
 
-function Finding({ f }) {
+function Finding({ f, onExplain }) {
   const [expanded, setExpanded] = useState(false);
   const color = SEV_COLORS[f.severity] || '#6b7280';
   const locations = f.locations || [];
@@ -37,6 +37,18 @@ function Finding({ f }) {
                          background: '#eceff3', padding: '1px 8px', borderRadius: 20 }}>
             {f.occurrences} occurrences
           </span>
+        )}
+
+        {onExplain && (
+          <button
+            type="button"
+            onClick={() => onExplain(f)}
+            style={{ marginLeft: 'auto', fontSize: 11, fontWeight: 600, color: 'var(--accent)',
+                     background: 'var(--accent-glow)', border: '1px solid rgba(79,126,248,0.25)',
+                     borderRadius: 6, padding: '3px 10px', cursor: 'pointer', flexShrink: 0 }}
+          >
+            ✦ Explain &amp; fix
+          </button>
         )}
       </div>
 
@@ -85,7 +97,7 @@ function Finding({ f }) {
   );
 }
 
-export default function SecurityTab({ security, scanMode, onRunDeepScan, deepScanRunning, deepScanProgress }) {
+export default function SecurityTab({ security, scanMode, onRunDeepScan, deepScanRunning, deepScanProgress, onExplainFinding }) {
   // A Basic Scan never runs the security scanner — it still returns a
   // default (zeroed, "no findings") result object rather than null, which
   // would otherwise render here as a false "no security issues found".
@@ -104,6 +116,16 @@ export default function SecurityTab({ security, scanMode, onRunDeepScan, deepSca
 
   const findings = security.findings || [];
   const summary  = security.summary  || {};
+
+  // Builds a concrete, grounded question for the AI Chat tab instead of a
+  // generic "explain this" — including file/line means the model doesn't
+  // have to guess which of possibly-several similar findings is meant.
+  const handleExplain = (f) => {
+    if (!onExplainFinding) return;
+    const location = f.file ? ` in ${f.file}${f.line ? `:${f.line}` : ''}` : '';
+    const question = `Explain the "${f.title}" (${f.severity}) finding${location} and show me how to fix it.`;
+    onExplainFinding(question);
+  };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
@@ -143,7 +165,7 @@ export default function SecurityTab({ security, scanMode, onRunDeepScan, deepSca
                         textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 12 }}>
             Findings ({findings.length} rule{findings.length === 1 ? '' : 's'})
           </div>
-          {findings.map((f, i) => <Finding key={i} f={f} />)}
+          {findings.map((f, i) => <Finding key={i} f={f} onExplain={onExplainFinding ? handleExplain : null} />)}
         </div>
       ) : (
         <div style={{ padding: 32, textAlign: 'center',

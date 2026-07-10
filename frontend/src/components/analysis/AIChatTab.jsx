@@ -155,7 +155,12 @@ function saveStoredMessages(analysisId, messages) {
   }
 }
 
-export default function AIChatTab({ analysisId, projectName }) {
+// `pendingQuestion`: set by a parent (e.g. SecurityTab's "Explain & fix"
+// button via AnalysisCard) to hand this tab a question to ask on the
+// user's behalf, grounded in a specific finding rather than a generic
+// "explain this". `onPendingConsumed` is called once it's been sent, so
+// the parent can clear its state and avoid re-sending on every re-render.
+export default function AIChatTab({ analysisId, projectName, pendingQuestion, onPendingConsumed }) {
   const [messages, setMessages] = useState(() => loadStoredMessages(analysisId)); // {role, content, at, streaming?}
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);      // waiting on the network request
@@ -234,7 +239,10 @@ export default function AIChatTab({ analysisId, projectName }) {
   };
 
   const send = async () => {
-    const trimmed = input.trim();
+    await sendMessage(input.trim());
+  };
+
+  const sendMessage = async (trimmed) => {
     if (!trimmed || sending || streamingId != null) return;
 
     const nextMessages = [...messages, { role: 'user', content: trimmed, at: new Date() }];
@@ -275,6 +283,17 @@ export default function AIChatTab({ analysisId, projectName }) {
       setSending(false);
     }
   };
+
+  // Fires once per incoming pendingQuestion — sends it straight through
+  // (bypassing the input box entirely, since setInput()+send() would race
+  // against React's async state update) and immediately tells the parent
+  // it's been consumed so switching tabs away and back doesn't re-send it.
+  useEffect(() => {
+    if (!pendingQuestion) return;
+    sendMessage(pendingQuestion);
+    onPendingConsumed?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingQuestion]);
 
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {

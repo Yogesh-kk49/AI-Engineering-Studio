@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import api from '../../services/api';
 
 /**
@@ -9,6 +9,13 @@ import api from '../../services/api';
  */
 export default function CodeViewerModal({ analysisId, path, onClose }) {
   const [state, setState] = useState({ loading: true, error: null, content: '', truncated: false });
+  const dialogRef = useRef(null);
+  const closeBtnRef = useRef(null);
+  // Remember what had focus before the modal opened, so closing it
+  // (Escape, backdrop click, or the × button) returns focus there
+  // instead of silently dropping it back to <body> — important for
+  // anyone navigating by keyboard/screen reader.
+  const previouslyFocusedRef = useRef(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -28,13 +35,48 @@ export default function CodeViewerModal({ analysisId, path, onClose }) {
     return () => { cancelled = true; };
   }, [analysisId, path]);
 
+  // Focus management: move focus into the dialog on open, trap Tab/Shift+Tab
+  // inside it while open, and restore focus to whatever triggered it on close.
   useEffect(() => {
-    const onKey = e => { if (e.key === 'Escape') onClose(); };
+    previouslyFocusedRef.current = document.activeElement;
+    closeBtnRef.current?.focus();
+
+    const onKey = e => {
+      if (e.key === 'Escape') {
+        onClose();
+        return;
+      }
+      if (e.key !== 'Tab' || !dialogRef.current) return;
+
+      const focusable = dialogRef.current.querySelectorAll(
+        'button, [href], input, textarea, [tabindex]:not([tabindex="-1"])'
+      );
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      // Guard: the trigger element may have been unmounted (e.g. the tree
+      // it lived in re-rendered) — only refocus if it's still attached.
+      if (previouslyFocusedRef.current && document.contains(previouslyFocusedRef.current)) {
+        previouslyFocusedRef.current.focus();
+      }
+    };
   }, [onClose]);
 
   const ext = path.includes('.') ? path.split('.').pop().toLowerCase() : '';
+  const titleId = 'code-viewer-title';
 
   return (
     <div
@@ -44,6 +86,10 @@ export default function CodeViewerModal({ analysisId, path, onClose }) {
                 zIndex: 1000, padding: 24 }}
     >
       <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
         onClick={e => e.stopPropagation()}
         style={{ background: 'var(--bg-card)', borderRadius: 12, width: '100%', maxWidth: 900,
                   maxHeight: '85vh', display: 'flex', flexDirection: 'column',
@@ -53,32 +99,34 @@ export default function CodeViewerModal({ analysisId, path, onClose }) {
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                       padding: '12px 18px', borderBottom: '1px solid var(--border)' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-            <span style={{ fontSize: 14 }}>📄</span>
-            <span style={{ fontFamily: 'var(--mono)', fontSize: 13, fontWeight: 600,
+            <span aria-hidden="true" style={{ fontSize: 14 }}>📄</span>
+            <span id={titleId} style={{ fontFamily: 'var(--mono)', fontSize: 13, fontWeight: 600,
                           color: 'var(--text-strong)', whiteSpace: 'nowrap',
                           overflow: 'hidden', textOverflow: 'ellipsis' }}>
               {path}
             </span>
           </div>
           <button
+            ref={closeBtnRef}
             onClick={onClose}
+            aria-label="Close file viewer"
             style={{ width: 28, height: 28, borderRadius: 6, background: 'transparent',
                      border: '1px solid var(--border)', color: 'var(--text-muted)',
                      cursor: 'pointer', flexShrink: 0, fontSize: 14, lineHeight: 1 }}
           >
-            ✕
+            <span aria-hidden="true">✕</span>
           </button>
         </div>
 
         {/* Body */}
         <div style={{ overflow: 'auto', flex: 1, background: '#0d1117' }}>
           {state.loading && (
-            <div style={{ padding: 40, textAlign: 'center', color: '#8b949e', fontSize: 13 }}>
+            <div role="status" style={{ padding: 40, textAlign: 'center', color: '#8b949e', fontSize: 13 }}>
               Loading file…
             </div>
           )}
           {state.error && (
-            <div style={{ padding: 40, textAlign: 'center', color: '#f97583', fontSize: 13 }}>
+            <div role="alert" style={{ padding: 40, textAlign: 'center', color: '#f97583', fontSize: 13 }}>
               {state.error}
             </div>
           )}

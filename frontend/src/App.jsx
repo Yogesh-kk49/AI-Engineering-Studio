@@ -3,6 +3,7 @@ import { AuthProvider, useAuth } from './context/AuthContext';
 import HomePage from './pages/HomePage';
 import AuthPage from './pages/AuthPage';
 import Dashboard from './pages/Dashboard';
+import HistoryPage from './pages/HistoryPage';
 import './App.css';
 
 function FullScreenLoader() {
@@ -55,6 +56,15 @@ function AppRoutes() {
         element={(
           <RequireAuth>
             <Dashboard />
+          </RequireAuth>
+        )}
+      />
+
+      <Route
+        path="/history"
+        element={(
+          <RequireAuth>
+            <HistoryPage />
           </RequireAuth>
         )}
       />

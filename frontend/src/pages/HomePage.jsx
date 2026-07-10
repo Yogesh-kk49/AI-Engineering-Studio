@@ -112,7 +112,7 @@ export default function HomePage() {
             </button>
           </div>
           <p style={{ fontSize: 12, color: 'var(--text-faint)', marginTop: 12 }}>
-            No password needed — sign in with a one-time email code.
+            No password needed-sign in with a one-time email code.
           </p>
         </div>
 

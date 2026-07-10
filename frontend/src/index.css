@@ -172,4 +172,131 @@ input, textarea { font-family: inherit; outline: none; }
 
 /* ─── Utility ───────────────────────────────────────────────────────────── */
 .animate-fade  { animation: fadeIn 0.3s ease both; }
+
+/* ─── Accessibility ─────────────────────────────────────────────────────── */
+/* Visible, consistent focus ring for keyboard users on every interactive
+   element — previously relied entirely on browser defaults (or none at
+   all, since `button { outline: none; }` above removes them). This keeps
+   the outline suppressed for mouse/touch clicks but restores it for
+   keyboard navigation via :focus-visible. */
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* Visually hidden but still readable by screen readers — for labeling
+   icon-only buttons, live regions, etc. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Respect the OS-level "reduce motion" preference instead of forcing every
+   fade/slide/shimmer animation on everyone regardless of preference. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ─── Responsive ─────────────────────────────────────────────────────────
+   The app was built almost entirely with fixed-pixel inline styles and
+   had zero @media breakpoints anywhere in the codebase, so it didn't
+   adapt to phone-width screens at all. These rules target the layout
+   patterns that recur across pages (sticky headers, two-column grids,
+   the analysis tab bar) via structural/attribute selectors so they apply
+   without having to rewrite every inline style into a class.
+   ────────────────────────────────────────────────────────────────────── */
+@media (max-width: 640px) {
+  html { font-size: 14px; }
+
+  /* Any of this app's "maxWidth: 1200 / 720 / 900, margin: 0 auto" content
+     containers — give them breathing room on narrow screens instead of
+     the fixed horizontal padding meant for desktop. */
+  body [style*="max-width"] {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  /* Two-column grids (Overview tab's "Repository Info" / "Project
+     Features" side-by-side layout, etc.) collapse to one column instead
+     of squeezing two onto a phone width. */
+  body [style*="grid-template-columns: 1fr 1fr"] {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* The sticky dashboard/nav header's title + actions row wraps instead
+     of overflowing horizontally. */
+  header [style*="display: flex"] {
+    flex-wrap: wrap;
+    row-gap: 8px;
+  }
+
+  /* Analysis card tab bar — give tab buttons a smaller touch target so
+     more of them are visible per screen before horizontal scroll kicks
+     in (the inline overflowX: auto already handles the rest). */
+  .tab-bar-scroll button {
+    padding: 10px 12px !important;
+    font-size: 12px !important;
+  }
+}
+
+@media (max-width: 900px) {
+  /* Landing page feature grid and similar stat grids: drop from
+     4-across to 2-across before hitting phone width, where the 640px
+     rule above takes it the rest of the way to 1-across. */
+  body [style*="repeat(auto-fit, minmax(240px"] {
+    grid-template-columns: repeat(2, 1fr) !important;
+  }
+}
 .animate-slide { animation: slideDown 0.25s ease both; }
+
+/* ─── Micro-interactions ─────────────────────────────────────────────────
+   The app had almost no tactile feedback on interactive elements beyond a
+   border/color swap on hover — buttons felt static rather than pressable,
+   and primary CTAs (gradient buttons) didn't move at all on hover. These
+   are pure CSS additions; no component markup or props change. */
+
+html {
+  scroll-behavior: smooth;
+}
+
+/* Every clickable button gets a subtle "press" on click — skipped for
+   disabled buttons so a spinner/loading state doesn't visibly "give" as
+   if it were still clickable. */
+button:not(:disabled):active {
+  transform: scale(0.96);
+}
+
+/* Primary gradient CTAs (Analyze, Sign In, Go to Dashboard, etc. — all
+   share this exact gradient) lift slightly and deepen their shadow on
+   hover, rather than sitting completely still. */
+button[style*="linear-gradient(135deg,#4f7ef8,#2563eb)"]:not(:disabled):hover {
+  transform: translateY(-1px);
+  filter: brightness(1.05);
+}
+button[style*="linear-gradient(135deg,#4f7ef8,#2563eb)"]:not(:disabled):active {
+  transform: translateY(0) scale(0.97);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  button:not(:disabled):active,
+  button[style*="linear-gradient(135deg,#4f7ef8,#2563eb)"]:not(:disabled):hover {
+    transform: none;
+  }
+}
