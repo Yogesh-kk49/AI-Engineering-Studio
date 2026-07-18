@@ -8,13 +8,10 @@ const RESEND_COOLDOWN = 30; // seconds — mirrors backend RESEND_COOLDOWN_SECON
 function Logo() {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 10, justifyContent: 'center', marginBottom: 28 }}>
-      <div style={{ width: 40, height: 40, borderRadius: 10, display: 'flex',
+      <div style={{ width: 40, height: 40, borderRadius: 10, overflow: 'hidden', display: 'flex',
         alignItems: 'center', justifyContent: 'center',
         background: 'linear-gradient(135deg,#4f7ef8,#2563eb)' }}>
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5">
-          <circle cx="12" cy="12" r="3"/>
-          <path d="M3 12h1M20 12h1M12 3v1M12 20v1M6.34 6.34l.7.7M16.97 16.97l.7.7M6.34 17.66l.7-.7M16.97 7.03l.7-.7"/>
-        </svg>
+        <img src="/yk-icon.png" alt="YK" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
       </div>
       <span style={{ fontSize: 18, fontWeight: 700, color: 'var(--text-heading)', letterSpacing: '-0.02em' }}>
         AI Engineering Studio
@@ -125,32 +122,35 @@ export default function AuthPage() {
 
   return (
     <div style={{ minHeight: '100vh', background: 'var(--bg)', display: 'flex',
-      alignItems: 'center', justifyContent: 'center', padding: 24, position: 'relative' }}>
-      <button
-        onClick={() => navigate('/')}
-        aria-label="Back to home"
-        style={{ position: 'absolute', top: 24, left: 24, display: 'flex',
-          alignItems: 'center', gap: 6, background: 'none', border: 'none',
-          color: 'var(--text-muted)', fontSize: 13, fontWeight: 600, cursor: 'pointer',
-          padding: '6px 10px', borderRadius: 'var(--radius)', transition: 'var(--transition)' }}
-        onMouseEnter={e => { e.currentTarget.style.color = 'var(--text-strong)'; }}
-        onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-muted)'; }}
-      >
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <line x1="19" y1="12" x2="5" y2="12"/>
-          <polyline points="12 19 5 12 12 5"/>
-        </svg>
-        Back
-      </button>
+      flexDirection: 'column' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        padding: '20px 24px', flexWrap: 'wrap', gap: 12 }}>
+        <button
+          onClick={() => navigate('/')}
+          aria-label="Back to home"
+          style={{ display: 'flex',
+            alignItems: 'center', gap: 6, background: 'none', border: 'none',
+            color: 'var(--text-muted)', fontSize: 13, fontWeight: 600, cursor: 'pointer',
+            padding: '6px 10px', borderRadius: 'var(--radius)', transition: 'var(--transition)' }}
+          onMouseEnter={e => { e.currentTarget.style.color = 'var(--text-strong)'; }}
+          onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-muted)'; }}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <line x1="19" y1="12" x2="5" y2="12"/>
+            <polyline points="12 19 5 12 12 5"/>
+          </svg>
+          Back
+        </button>
 
-      <div style={{ position: 'absolute', top: 24, right: 24 }}>
         <ThemeToggle />
       </div>
 
-      <div style={{ width: '100%', maxWidth: 400, background: 'var(--bg-card)',
-        border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)',
-        boxShadow: 'var(--shadow-elevated)', padding: '36px 32px' }}
-        className="animate-fade">
+      <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
+        padding: '24px' }}>
+        <div style={{ width: '100%', maxWidth: 400, background: 'var(--bg-card)',
+          border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)',
+          boxShadow: 'var(--shadow-elevated)', padding: '36px 32px' }}
+          className="animate-fade">
         <Logo />
 
         {step === 'email' && (
@@ -252,6 +252,15 @@ export default function AuthPage() {
             </div>
           </>
         )}
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center',
+        gap: 6, padding: '0 24px 24px' }}>
+        <img src="/yk-logo-full.png" alt="YK Product" style={{ height: 34, objectFit: 'contain', opacity: 0.9 }} />
+        <span style={{ fontSize: 11, color: 'var(--text-faint)', textAlign: 'center' }}>
+          © {new Date().getFullYear()} YK Product. All rights reserved.
+        </span>
       </div>
     </div>
   );

@@ -34,15 +34,12 @@ function NavBar() {
       background: 'var(--bg-glass)', backdropFilter: 'blur(12px)',
       position: 'sticky', top: 0, zIndex: 100 }}>
       <div style={{ maxWidth: 1200, margin: '0 auto', display: 'flex',
-        alignItems: 'center', height: 64, gap: 16 }}>
+        alignItems: 'center', minHeight: 64, padding: '10px 0', gap: 16, flexWrap: 'wrap' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <div style={{ width: 32, height: 32, borderRadius: 8, display: 'flex',
+          <div style={{ width: 32, height: 32, borderRadius: 8, overflow: 'hidden', display: 'flex',
             alignItems: 'center', justifyContent: 'center',
             background: 'linear-gradient(135deg,#4f7ef8,#2563eb)' }}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5">
-              <circle cx="12" cy="12" r="3"/>
-              <path d="M3 12h1M20 12h1M12 3v1M12 20v1M6.34 6.34l.7.7M16.97 16.97l.7.7M6.34 17.66l.7-.7M16.97 7.03l.7-.7"/>
-            </svg>
+            <img src="/yk-icon.png" alt="YK" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
           </div>
           <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-heading)',
             letterSpacing: '-0.02em' }}>
@@ -97,7 +94,7 @@ export default function HomePage() {
           <p style={{ fontSize: 17, color: 'var(--text-muted)', lineHeight: 1.7,
             maxWidth: 560, margin: '0 auto 32px' }}>
             Paste any public GitHub URL and get architecture, security, code
-            quality, and dependency analysis — plus an AI reviewer you can
+            quality, and dependency analysis-plus an AI reviewer you can
             chat with about the results. Every scan is saved to your own
             private history.
           </p>
@@ -108,7 +105,7 @@ export default function HomePage() {
               style={{ padding: '13px 28px', borderRadius: 'var(--radius)',
                 background: 'linear-gradient(135deg,#4f7ef8,#2563eb)', color: '#fff',
                 fontWeight: 700, fontSize: 15, boxShadow: 'var(--shadow-card)' }}>
-              {isAuthenticated ? 'Go to Dashboard →' : 'Get Started — it\'s free →'}
+              {isAuthenticated ? 'Go to Dashboard →' : 'Get Started - it\'s free →'}
             </button>
           </div>
           <p style={{ fontSize: 12, color: 'var(--text-faint)', marginTop: 12 }}>
@@ -135,7 +132,12 @@ export default function HomePage() {
 
       <footer style={{ borderTop: '1px solid var(--border)', padding: '24px 32px',
         textAlign: 'center', fontSize: 12, color: 'var(--text-faint)' }}>
-        Works with any public GitHub repository.
+        <div>Works with any public GitHub repository.</div>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center',
+          gap: 6, marginTop: 16 }}>
+          <img src="/yk-logo-full.png" alt="YK Product" style={{ height: 30, objectFit: 'contain', opacity: 0.9 }} />
+          <span>© {new Date().getFullYear()} YK Product. All rights reserved.</span>
+        </div>
       </footer>
     </div>
   );

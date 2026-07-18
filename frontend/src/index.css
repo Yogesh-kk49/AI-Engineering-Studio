@@ -108,6 +108,8 @@
 
 html { scroll-behavior: smooth; }
 
+html, body { overflow-x: hidden; max-width: 100%; }
+
 body {
   font-family: var(--sans);
   font-size: 14px;

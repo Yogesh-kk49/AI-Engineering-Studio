@@ -125,10 +125,16 @@ export default function HistoryPage() {
   return (
     <div style={{ minHeight: '100vh', background: 'var(--bg)' }}>
       {/* ── Sticky header ── */}
-      <header style={{ position: 'sticky', top: 0, zIndex: 40, background: 'var(--bg-header)',
-        borderBottom: '1px solid var(--border)', backdropFilter: 'blur(8px)' }}>
-        <div style={{ maxWidth: 1200, margin: '0 auto', padding: '14px 32px',
-          display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
+      <header style={{
+        borderBottom: '1px solid var(--border)',
+        padding: '0 32px',
+        background: 'var(--bg-glass)',
+        backdropFilter: 'blur(12px)',
+        position: 'sticky', top: 0, zIndex: 100,
+        boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
+      }}>
+        <div style={{ maxWidth: 1200, margin: '0 auto', display: 'flex',
+          alignItems: 'center', height: 60, gap: 16, flexWrap: 'wrap' }}>
 
           <button
             onClick={() => navigate('/dashboard')}

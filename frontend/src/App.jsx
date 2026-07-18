@@ -4,6 +4,8 @@ import HomePage from './pages/HomePage';
 import AuthPage from './pages/AuthPage';
 import Dashboard from './pages/Dashboard';
 import HistoryPage from './pages/HistoryPage';
+import HelpPage from './pages/HelpPage';
+import TermsPage from './pages/TermsPage';
 import './App.css';
 
 function FullScreenLoader() {
@@ -68,6 +70,10 @@ function AppRoutes() {
           </RequireAuth>
         )}
       />
+
+      {/* Help and Terms are public — accessible whether signed in or not. */}
+      <Route path="/help" element={<HelpPage />} />
+      <Route path="/terms" element={<TermsPage />} />
 
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

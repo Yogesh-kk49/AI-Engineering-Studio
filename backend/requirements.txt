@@ -4,6 +4,9 @@ djangorestframework==3.17.1
 django-cors-headers==4.9.0
 gunicorn==23.0.0
 
+# Static file serving in production (no nginx/CDN in front of Django)
+whitenoise==6.8.2
+
 # Async pipeline
 celery==5.5.2
 redis==5.2.1

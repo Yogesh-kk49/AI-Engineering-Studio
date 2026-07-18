@@ -1,0 +1,72 @@
+# Render Blueprint for AI Engineering Studio.
+#
+# Deploys two services:
+#   1. backend  — Django API (Docker, gunicorn), SQLite on local disk
+#   2. frontend — React app, built and served as a static site
+#
+# NOTE on the database: this keeps the project's existing SQLite setup
+# as-is (no Postgres migration). Render's disk is ephemeral, so the
+# database resets on every deploy/restart — acceptable per project
+# owner's call, but worth knowing before you rely on it for real data.
+#
+# NOTE on Celery: SQLite can't safely be shared between two separate
+# Render services (the web service and a worker service each get their
+# own disk), so this blueprint does NOT run a separate Celery worker or
+# Redis instance. USE_REDIS is left unset, which makes the backend fall
+# back to CELERY_TASK_ALWAYS_EAGER — analysis jobs run synchronously
+# in the web request itself instead of in the background. If you later
+# move to Postgres, you can add a `redis` and `worker` service back in
+# and set USE_REDIS=true.
+#
+# Usage: push this to the repo root, then in the Render dashboard choose
+# "New +" → "Blueprint" and point it at this repo.
+
+services:
+  # ── Backend: Django API ──────────────────────────────────────────────
+  - type: web
+    name: ai-engineering-studio-backend
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: free
+    healthCheckPath: /api/system/status/
+    envVars:
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DEBUG
+        value: "False"
+      - key: ALLOWED_HOSTS
+        value: ai-engineering-studio-backend.onrender.com
+      - key: CORS_ALLOWED_ORIGINS
+        value: https://ai-engineering-studio-frontend.onrender.com
+      - key: CSRF_TRUSTED_ORIGINS
+        value: https://ai-engineering-studio-frontend.onrender.com
+      # Set these in the Render dashboard (Secret) after the first deploy —
+      # left blank here so they don't end up committed to the repo.
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      # Optional: real email delivery for OTP login codes. Leave unset and
+      # the backend falls back to printing the code to the service logs.
+      - key: EMAIL_HOST_USER
+        sync: false
+      - key: EMAIL_HOST_PASSWORD
+        sync: false
+
+  # ── Frontend: React app (static site) ────────────────────────────────
+  - type: web
+    name: ai-engineering-studio-frontend
+    runtime: static
+    rootDir: frontend
+    buildCommand: npm ci && npm run build
+    staticPublishPath: ./dist
+    envVars:
+      - key: VITE_API_URL
+        value: https://ai-engineering-studio-backend.onrender.com/api/
+    routes:
+      # Client-side routing (react-router) — send unmatched paths to
+      # index.html instead of a static 404.
+      - type: rewrite
+        source: /*
+        destination: /index.html

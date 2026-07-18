@@ -177,17 +177,14 @@ export default function Dashboard() {
         boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
       }}>
         <div style={{ maxWidth: 1200, margin: '0 auto', display: 'flex',
-                      alignItems: 'center', height: 60, gap: 16 }}>
+                      alignItems: 'center', minHeight: 60, padding: '10px 0',
+                      gap: 16, flexWrap: 'wrap' }}>
           {/* Logo */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
-            <div style={{ width: 32, height: 32, borderRadius: 8, display: 'flex',
+            <div style={{ width: 32, height: 32, borderRadius: 8, overflow: 'hidden', display: 'flex',
               alignItems: 'center', justifyContent: 'center',
               background: 'linear-gradient(135deg,#4f7ef8,#2563eb)' }}>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
-                   stroke="white" strokeWidth="2.5">
-                <circle cx="12" cy="12" r="3"/>
-                <path d="M3 12h1M20 12h1M12 3v1M12 20v1M6.34 6.34l.7.7M16.97 16.97l.7.7M6.34 17.66l.7-.7M16.97 7.03l.7-.7"/>
-              </svg>
+              <img src="/yk-icon.png" alt="YK" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
             </div>
             <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-heading)',
                            letterSpacing: '-0.02em' }}>
@@ -315,7 +312,7 @@ export default function Dashboard() {
                 {latestPerRepo.length} total
               </span>
             </h2>
-            <div style={{ position: 'relative' }}>
+            <div style={{ position: 'relative', width: '100%', maxWidth: 220 }}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                    strokeWidth="2" style={{ position: 'absolute', left: 10, top: '50%',
                    transform: 'translateY(-50%)', color: 'var(--text-muted)', pointerEvents: 'none' }}>
@@ -325,7 +322,8 @@ export default function Dashboard() {
                 value={search} onChange={e => setSearch(e.target.value)}
                 style={{ paddingLeft: 32, paddingRight: 14, paddingTop: 8, paddingBottom: 8,
                   background: 'var(--bg-input)', border: '1px solid var(--border)',
-                  borderRadius: 8, color: 'var(--text-strong)', fontSize: 13, width: 220 }} />
+                  borderRadius: 8, color: 'var(--text-strong)', fontSize: 13, width: '100%',
+                  boxSizing: 'border-box' }} />
             </div>
           </div>
         )}
