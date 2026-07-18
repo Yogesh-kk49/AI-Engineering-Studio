@@ -25,27 +25,46 @@ GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # ──────────────────────────────────────────────────────────────────────────
-# Email (OTP login codes are sent through this) — Gmail SMTP by default
+# Email (OTP login codes are sent through this)
 # ──────────────────────────────────────────────────────────────────────────
-# Gmail rejects plain account-password SMTP logins, so EMAIL_HOST_PASSWORD
-# must be a Gmail "App Password", not the account's normal login password:
-#   Google Account → Security → 2-Step Verification → App passwords
-# Set these in backend/.env:
-#   EMAIL_HOST_USER=youraddress@gmail.com
-#   EMAIL_HOST_PASSWORD=xxxx xxxx xxxx xxxx   (the 16-char App Password)
-#   DEFAULT_FROM_EMAIL=youraddress@gmail.com  (optional, defaults to the above)
+# Two ways to send real email, tried in this order:
+#
+# 1. RESEND (HTTP API, port 443) — set RESEND_API_KEY in backend/.env.
+#    Use this on Render: Render's free tier blocks outbound SMTP ports
+#    (587/465) entirely, so Gmail SMTP below fails with
+#    "OSError: Network is unreachable" no matter what credentials/timeout
+#    you set. Resend sends over plain HTTPS, so it isn't affected.
+#    Get a free key at resend.com → API Keys. You can send from
+#    "onboarding@resend.dev" with zero setup, or verify your own domain
+#    later and use RESEND_FROM_EMAIL.
+#      RESEND_API_KEY=re_xxxxxxxxxxxx
+#      RESEND_FROM_EMAIL=onboarding@resend.dev
+#
+# 2. GMAIL SMTP — fine for local dev / non-Render hosts that allow
+#    outbound SMTP. Gmail rejects plain account-password logins, so
+#    EMAIL_HOST_PASSWORD must be a Gmail "App Password":
+#      Google Account → Security → 2-Step Verification → App passwords
+#      EMAIL_HOST_USER=youraddress@gmail.com
+#      EMAIL_HOST_PASSWORD=xxxx xxxx xxxx xxxx
+#
+# Neither set → falls back to printing the code to the console (dev only).
+RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
+RESEND_FROM_EMAIL = os.getenv("RESEND_FROM_EMAIL", "onboarding@resend.dev")
+
 EMAIL_HOST = os.getenv("EMAIL_HOST", "smtp.gmail.com")
 EMAIL_PORT = int(os.getenv("EMAIL_PORT", "587"))
 EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS", "True") == "True"
 EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "")
 EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
+# Without this, a blocked/slow SMTP connection hangs with no timeout until
+# Gunicorn's own worker timeout kills the entire request.
 EMAIL_TIMEOUT = int(os.getenv("EMAIL_TIMEOUT", "10"))
-DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", EMAIL_HOST_USER)
+DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", RESEND_FROM_EMAIL if RESEND_API_KEY else EMAIL_HOST_USER)
 
-# Without real Gmail credentials configured, sending would just fail on
-# every login attempt — fall back to printing the email (OTP code and
-# all) to the backend's console instead, so local dev still works without
-# needing a Gmail account set up.
+# Only relevant when RESEND_API_KEY is NOT set — accounts/views.py checks
+# RESEND_API_KEY first and calls Resend's HTTP API directly, bypassing
+# Django's mail backend entirely. This EMAIL_BACKEND setting is just the
+# SMTP/console fallback for that non-Resend path.
 EMAIL_BACKEND = os.getenv("EMAIL_BACKEND", "").strip() or (
     "django.core.mail.backends.smtp.EmailBackend"
     if EMAIL_HOST_USER and EMAIL_HOST_PASSWORD

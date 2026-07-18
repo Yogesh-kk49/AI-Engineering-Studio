@@ -1,5 +1,6 @@
 import logging
 
+import requests
 from django.conf import settings
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
@@ -16,6 +17,36 @@ from .models import EmailOTP
 from .throttles import OTPRequestThrottle, OTPVerifyThrottle
 
 logger = logging.getLogger(__name__)
+
+RESEND_API_URL = "https://api.resend.com/emails"
+
+
+def _send_via_resend(subject: str, message: str, to_email: str) -> None:
+    """
+    Send through Resend's HTTP API (port 443) instead of raw SMTP.
+    Raises on any non-2xx response or network error — caller is
+    responsible for catching and turning that into a user-facing error.
+
+    This exists because Render's free tier blocks outbound SMTP ports
+    (587/465) entirely, so django.core.mail's SMTP backend can never
+    connect from there no matter what credentials/timeout are set.
+    Resend sends over plain HTTPS, so it isn't affected.
+    """
+    resp = requests.post(
+        RESEND_API_URL,
+        headers={
+            "Authorization": f"Bearer {settings.RESEND_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "from": settings.RESEND_FROM_EMAIL,
+            "to": [to_email],
+            "subject": subject,
+            "text": message,
+        },
+        timeout=getattr(settings, "EMAIL_TIMEOUT", 10),
+    )
+    resp.raise_for_status()
 
 # Minimum gap between two OTP emails to the same address. Independent of
 # the IP-based OTPRequestThrottle — this stops "click resend" spam to one
@@ -78,13 +109,16 @@ class RequestOTPView(APIView):
             "If you didn't request this, you can safely ignore this email."
         )
         try:
-            send_mail(
-                subject,
-                message,
-                settings.DEFAULT_FROM_EMAIL,
-                [email],
-                fail_silently=False,
-            )
+            if getattr(settings, "RESEND_API_KEY", ""):
+                _send_via_resend(subject, message, email)
+            else:
+                send_mail(
+                    subject,
+                    message,
+                    settings.DEFAULT_FROM_EMAIL,
+                    [email],
+                    fail_silently=False,
+                )
         except Exception:
             # Don't leave an unusable, un-sendable code sitting in the DB —
             # a retry should be able to issue a fresh one immediately
@@ -103,14 +137,17 @@ class RequestOTPView(APIView):
             "message": "Verification code sent. Check your inbox.",
             "expires_in_minutes": expiry_minutes,
         }
-        # Gmail credentials aren't configured (see settings.py) — nothing
-        # actually left the server, it was just printed to this process's
-        # console. Surfacing the code here too means local/dev testing
-        # doesn't require watching backend logs, and makes it obvious
-        # *why* no email shows up instead of looking like a silent bug.
-        # This branch is unreachable once EMAIL_HOST_USER/PASSWORD are set
-        # to real Gmail credentials — real deployments never hit it.
-        if settings.EMAIL_BACKEND == "django.core.mail.backends.console.EmailBackend":
+        # Neither Resend nor Gmail credentials are configured (see
+        # settings.py) — nothing actually left the server, it was just
+        # printed to this process's console. Surfacing the code here too
+        # means local/dev testing doesn't require watching backend logs.
+        # Unreachable once RESEND_API_KEY or EMAIL_HOST_USER/PASSWORD are
+        # set to real credentials — real deployments never hit this.
+        used_console = (
+            not getattr(settings, "RESEND_API_KEY", "")
+            and settings.EMAIL_BACKEND == "django.core.mail.backends.console.EmailBackend"
+        )
+        if used_console:
             response_data["debug_otp"] = raw_code
             response_data["debug_note"] = (
                 "EMAIL_HOST_USER/EMAIL_HOST_PASSWORD aren't set, so no real "

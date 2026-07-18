@@ -49,8 +49,15 @@ services:
         sync: false
       - key: GEMINI_API_KEY
         sync: false
-      # Optional: real email delivery for OTP login codes. Leave unset and
-      # the backend falls back to printing the code to the service logs.
+      # Real email delivery for OTP login codes, sent via Resend's HTTP
+      # API (not SMTP) — Render's free tier blocks outbound SMTP ports
+      # entirely, so raw Gmail SMTP below can never connect from here.
+      # Get a free key at resend.com → API Keys. Leave unset and the
+      # backend falls back to printing the code to the service logs.
+      - key: RESEND_API_KEY
+        sync: false
+      # Optional Gmail SMTP fallback — only used if RESEND_API_KEY is
+      # unset, and won't work on Render's free tier (see note above).
       - key: EMAIL_HOST_USER
         sync: false
       - key: EMAIL_HOST_PASSWORD
