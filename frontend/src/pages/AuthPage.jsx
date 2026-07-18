@@ -66,6 +66,15 @@ function GoogleSignInButton({ onCredential, onError }) {
           // actually clicks the button below.
           auto_select: false,
           cancel_on_tap_outside: true,
+          // FedCM-enabled browsers rewrite the button itself into a
+          // personalized "Sign in as {cached name}" chip once there's an
+          // active Google session for this site — that's the screenshot:
+          // the button skipped the neutral state and jumped straight to a
+          // specific account with only a small chevron to switch. Turning
+          // FedCM off for the button keeps it on the classic, always-
+          // neutral "Sign in with Google" rendering, and clicking it opens
+          // Google's normal full account chooser instead of pre-filling one.
+          use_fedcm_for_button: false,
         });
         window.google.accounts.id.renderButton(buttonRef.current, {
           theme: 'outline',
