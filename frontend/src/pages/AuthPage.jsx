@@ -28,6 +28,23 @@ function loadGoogleScript() {
   return googleScriptPromise;
 }
 
+// Google's credential is a signed JWT — the backend verifies the
+// signature server-side before trusting anything in it (see
+// AuthContext.googleLogin), but we decode the payload client-side too,
+// purely to show "Continue as {name}" before actually signing in. Never
+// trust this decoded copy for anything security-sensitive.
+function decodeJwtPayload(jwt) {
+  try {
+    const base64 = jwt.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+    const json = decodeURIComponent(
+      atob(base64).split('').map(c => '%' + c.charCodeAt(0).toString(16).padStart(2, '0')).join('')
+    );
+    return JSON.parse(json);
+  } catch {
+    return null;
+  }
+}
+
 function GoogleSignInButton({ onCredential, onError }) {
   const buttonRef = useRef(null);
 
@@ -79,19 +96,43 @@ export default function AuthPage() {
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  // Set once Google hands back a credential, cleared once the user
+  // explicitly confirms (or backs out to pick another account). Nothing
+  // is sent to our backend / no redirect happens until they hit Continue.
+  const [pendingAccount, setPendingAccount] = useState(null); // { credential, name, email, picture }
 
-  const handleGoogleCredential = async (credential) => {
+  const handleGoogleCredential = (credential) => {
+    setError('');
+    const payload = decodeJwtPayload(credential);
+    setPendingAccount({
+      credential,
+      name: payload?.name || payload?.email || 'your Google account',
+      email: payload?.email || '',
+      picture: payload?.picture || '',
+    });
+  };
+
+  const handleContinue = async () => {
+    if (!pendingAccount) return;
     setError('');
     setLoading(true);
     try {
-      await googleLogin(credential);
+      await googleLogin(pendingAccount.credential);
       const redirectTo = location.state?.from?.pathname || '/dashboard';
       navigate(redirectTo, { replace: true });
     } catch (err) {
       setError(err.response?.data?.error || 'Google sign-in failed. Please try again.');
-    } finally {
       setLoading(false);
     }
+  };
+
+  // Lets the user back out of the confirmation screen and pick a
+  // different Google account instead of being stuck with the one they
+  // first selected.
+  const handleUseDifferentAccount = () => {
+    setPendingAccount(null);
+    setError('');
+    window.google?.accounts?.id?.disableAutoSelect?.();
   };
 
   return (
@@ -127,29 +168,85 @@ export default function AuthPage() {
           className="animate-fade">
           <Logo />
 
-          <h1 style={{ fontSize: 20, fontWeight: 700, color: 'var(--text-heading)',
-            textAlign: 'center', marginBottom: 6 }}>
-            Sign in to continue
-          </h1>
-          <p style={{ fontSize: 13, color: 'var(--text-muted)', textAlign: 'center', marginBottom: 28 }}>
-            Use your Google account-no password, no email code.
-          </p>
+          {pendingAccount ? (
+            <>
+              <h1 style={{ fontSize: 20, fontWeight: 700, color: 'var(--text-heading)',
+                textAlign: 'center', marginBottom: 20 }}>
+                Continue as {pendingAccount.name}?
+              </h1>
 
-          {GOOGLE_CLIENT_ID ? (
-            <GoogleSignInButton onCredential={handleGoogleCredential} onError={setError} />
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12,
+                padding: '12px 14px', borderRadius: 'var(--radius)',
+                background: 'var(--bg-input)', border: '1px solid var(--border)',
+                marginBottom: 20 }}>
+                {pendingAccount.picture ? (
+                  <img src={pendingAccount.picture} alt="" referrerPolicy="no-referrer"
+                    style={{ width: 36, height: 36, borderRadius: '50%', flexShrink: 0 }} />
+                ) : (
+                  <div style={{ width: 36, height: 36, borderRadius: '50%', flexShrink: 0,
+                    background: 'linear-gradient(135deg,#4f7ef8,#2563eb)', color: '#fff',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontWeight: 700, fontSize: 14 }}>
+                    {pendingAccount.name.charAt(0).toUpperCase()}
+                  </div>
+                )}
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--text-strong)',
+                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {pendingAccount.name}
+                  </div>
+                  {pendingAccount.email && (
+                    <div style={{ fontSize: 12, color: 'var(--text-muted)',
+                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {pendingAccount.email}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <button
+                onClick={handleContinue}
+                disabled={loading}
+                style={{ width: '100%', padding: '12px', borderRadius: 'var(--radius)',
+                  background: loading ? 'rgba(79,126,248,0.5)' : 'linear-gradient(135deg,#4f7ef8,#2563eb)',
+                  color: '#fff', fontWeight: 700, fontSize: 14,
+                  cursor: loading ? 'wait' : 'pointer', marginBottom: 10 }}
+              >
+                {loading ? 'Signing you in…' : 'Continue'}
+              </button>
+              <button
+                onClick={handleUseDifferentAccount}
+                disabled={loading}
+                style={{ width: '100%', padding: '10px', borderRadius: 'var(--radius)',
+                  background: 'transparent', border: '1px solid var(--border)',
+                  color: 'var(--text-muted)', fontWeight: 600, fontSize: 13,
+                  cursor: loading ? 'default' : 'pointer' }}
+              >
+                Use a different account
+              </button>
+            </>
           ) : (
-            <div style={{ fontSize: 13, color: 'var(--status-pending)',
-              background: 'var(--status-pending-bg)', borderRadius: 8,
-              padding: '10px 12px', textAlign: 'center' }}>
-              Google sign-in isn't configured yet — set VITE_GOOGLE_CLIENT_ID.
-            </div>
+            <>
+              <h1 style={{ fontSize: 20, fontWeight: 700, color: 'var(--text-heading)',
+                textAlign: 'center', marginBottom: 6 }}>
+                Sign in to continue
+              </h1>
+              <p style={{ fontSize: 13, color: 'var(--text-muted)', textAlign: 'center', marginBottom: 28 }}>
+                Use your Google account-no password, no email code.
+              </p>
+
+              {GOOGLE_CLIENT_ID ? (
+                <GoogleSignInButton onCredential={handleGoogleCredential} onError={setError} />
+              ) : (
+                <div style={{ fontSize: 13, color: 'var(--status-pending)',
+                  background: 'var(--status-pending-bg)', borderRadius: 8,
+                  padding: '10px 12px', textAlign: 'center' }}>
+                  Google sign-in isn't configured yet — set VITE_GOOGLE_CLIENT_ID.
+                </div>
+              )}
+            </>
           )}
 
-          {loading && (
-            <div style={{ fontSize: 13, color: 'var(--text-muted)', textAlign: 'center', marginTop: 16 }}>
-              Signing you in…
-            </div>
-          )}
           {error && (
             <div style={{ fontSize: 13, color: 'var(--grade-f)', textAlign: 'center', marginTop: 16 }}>
               {error}
