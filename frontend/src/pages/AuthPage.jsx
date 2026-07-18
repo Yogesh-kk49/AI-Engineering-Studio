@@ -58,12 +58,21 @@ function GoogleSignInButton({ onCredential, onError }) {
         window.google.accounts.id.initialize({
           client_id: GOOGLE_CLIENT_ID,
           callback: (response) => onCredential(response.credential),
+          // Without this, Google can silently re-sign-in a returning user
+          // the instant the button mounts (no click, no account picker) if
+          // the browser already has one Google session active for this
+          // site — that's what looked like "it just picks an account for
+          // me". Forcing this off means nothing happens until the person
+          // actually clicks the button below.
+          auto_select: false,
+          cancel_on_tap_outside: true,
         });
         window.google.accounts.id.renderButton(buttonRef.current, {
           theme: 'outline',
           size: 'large',
           width: 320,
-          text: 'continue_with',
+          text: 'signin_with',
+          logo_alignment: 'left',
         });
       })
       .catch(() => onError?.('Could not load Google Sign-In. Please refresh and try again.'));
@@ -232,7 +241,7 @@ export default function AuthPage() {
                 Sign in to continue
               </h1>
               <p style={{ fontSize: 13, color: 'var(--text-muted)', textAlign: 'center', marginBottom: 28 }}>
-                Use your Google account-no password, no email code.
+                Use your Google account — no password, no email code.
               </p>
 
               {GOOGLE_CLIENT_ID ? (
