@@ -1,0 +1,25 @@
+name: Keep Backend Awake
+
+# Render's free tier spins down the backend after ~15 minutes of
+# inactivity, causing the next real request to hang for 50s+ while it
+# cold-starts. This workflow pings the health-check endpoint every 10
+# minutes so it never goes idle long enough to spin down.
+#
+# Note: GitHub Actions cron schedules are "best effort" — on a quiet
+# repo, runs can occasionally be delayed by a few minutes. That's fine
+# here since Render's idle window is ~15 min and this runs every 10.
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {} # lets you trigger it manually from the Actions tab
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping backend health check
+        run: |
+          curl -sf --max-time 60 \
+            "https://ai-engineering-studio-backend.onrender.com/api/system/status/" \
+            || echo "Ping failed or backend was cold-starting — this is non-fatal."
