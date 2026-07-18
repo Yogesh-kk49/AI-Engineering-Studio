@@ -238,7 +238,7 @@ export default function RepositoryForm({ onAnalysisStarted, toast, findExistingB
 
   return (
     <form onSubmit={handleSubmit}>
-      <div style={{ display: 'flex', gap: 10, position: 'relative' }}>
+      <div className="repo-analyze-row" style={{ display: 'flex', gap: 10, position: 'relative' }}>
         {/* GitHub icon */}
         <div style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)',
                       color: 'var(--text-muted)', pointerEvents: 'none' }}>
@@ -254,7 +254,7 @@ export default function RepositoryForm({ onAnalysisStarted, toast, findExistingB
           onChange={e => setRepoUrl(e.target.value)}
           disabled={loading}
           style={{
-            flex: 1, padding: '12px 14px 12px 44px',
+            flex: 1, minWidth: 0, padding: '12px 14px 12px 44px',
             background: 'var(--bg-input)',
             border: `1px solid ${repoUrl ? 'var(--border-active)' : 'var(--border)'}`,
             borderRadius: 'var(--radius)', color: 'var(--text-strong)', fontSize: 14,

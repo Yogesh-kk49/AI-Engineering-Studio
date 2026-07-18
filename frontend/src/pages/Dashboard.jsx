@@ -147,12 +147,12 @@ export default function Dashboard() {
   const handleRescanned = useCallback(async (newData, oldId, cached) => {
     if (cached) {
       if (newData?.id) moveToTop(newData.id);
-      info(`"${newData?.project_name || 'Repository'}" is already up to date — no new commits found.`);
+      info(`"${newData?.project_name || 'Repository'}" is already up to date-no new commits found.`);
       return;
     }
     await refresh();
     if (newData?.id) moveToTop(newData.id);
-    success(`New commits found for "${newData?.project_name || 'repository'}" — re-analyzing now.`);
+    success(`New commits found for "${newData?.project_name || 'repository'}"-re-analyzing now.`);
   }, [refresh, moveToTop, success, info]);
 
   const handleDelete = useCallback(async (id) => {

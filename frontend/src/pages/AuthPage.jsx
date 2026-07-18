@@ -132,7 +132,7 @@ export default function AuthPage() {
             Sign in to continue
           </h1>
           <p style={{ fontSize: 13, color: 'var(--text-muted)', textAlign: 'center', marginBottom: 28 }}>
-            Use your Google account — no password, no email code.
+            Use your Google account-no password, no email code.
           </p>
 
           {GOOGLE_CLIENT_ID ? (

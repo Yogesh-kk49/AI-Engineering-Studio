@@ -285,74 +285,78 @@ export default function AnalysisCard({ analysis, onDelete, onRescanned, onFullDa
     }}>
       {/* ── Card header ── */}
       <div
+        className="card-header-row"
         onClick={() => !isPending && setOpen(o => !o)}
         style={{ padding: '18px 20px', display: 'flex', alignItems: 'center', gap: 16,
                  cursor: isPending ? 'default' : 'pointer', transition: 'var(--transition)' }}
         onMouseEnter={e => { if (!isPending) e.currentTarget.style.background = 'var(--bg-card-hover)'; }}
         onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
       >
-        {/* Icon */}
-        <div style={{ width: 40, height: 40, borderRadius: 10, flexShrink: 0,
-          background: isPending ? 'rgba(245,158,11,0.10)' : 'rgba(79,126,248,0.10)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          {isPending
-            ? <span style={{ width: 16, height: 16,
-                border: '2px solid rgba(245,158,11,0.25)', borderTopColor: 'var(--status-pending)',
-                borderRadius: '50%', animation: 'spin 0.8s linear infinite', display: 'block' }} />
-            : <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
-                   stroke="var(--accent)" strokeWidth="2">
-                <path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>
-                <polyline points="9 22 9 12 15 12 15 22"/>
-              </svg>
-          }
-        </div>
-
-        {/* Name + meta */}
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-            <span style={{ fontWeight: 700, fontSize: 15, color: 'var(--text-heading)' }}>
-              {analysis.project_name}
-            </span>
-            <a
-              href={analysis.repo_url}
-              target="_blank"
-              rel="noreferrer"
-              title="Open on GitHub"
-              onClick={e => e.stopPropagation()}
-              style={{ width: 20, height: 20, display: 'flex', alignItems: 'center', justifyContent: 'center',
-                       color: 'var(--text-muted)', borderRadius: 4, transition: 'var(--transition)' }}
-              onMouseEnter={e => { e.currentTarget.style.color = 'var(--accent)'; }}
-              onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-muted)'; }}
-            >
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6" />
-                <polyline points="15 3 21 3 21 9" />
-                <line x1="10" y1="14" x2="21" y2="3" />
-              </svg>
-            </a>
-            <StatusBadge status={analysis.status} />
+        {/* Icon + name/meta grouped so they stay on one line together on mobile */}
+        <div className="card-title-row" style={{ display: 'flex', alignItems: 'center', gap: 16, flex: 1, minWidth: 0 }}>
+          {/* Icon */}
+          <div style={{ width: 40, height: 40, borderRadius: 10, flexShrink: 0,
+            background: isPending ? 'rgba(245,158,11,0.10)' : 'rgba(79,126,248,0.10)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            {isPending
+              ? <span style={{ width: 16, height: 16,
+                  border: '2px solid rgba(245,158,11,0.25)', borderTopColor: 'var(--status-pending)',
+                  borderRadius: '50%', animation: 'spin 0.8s linear infinite', display: 'block' }} />
+              : <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
+                     stroke="var(--accent)" strokeWidth="2">
+                  <path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>
+                  <polyline points="9 22 9 12 15 12 15 22"/>
+                </svg>
+            }
           </div>
-          <div style={{ display: 'flex', gap: 12, marginTop: 4, flexWrap: 'wrap' }}>
-            {m.primary_language && <Tag>{m.primary_language}</Tag>}
-            {m.stars != null && (
-              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                ⭐ {formatNumber(m.stars)}
+
+          {/* Name + meta */}
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <span style={{ fontWeight: 700, fontSize: 15, color: 'var(--text-heading)' }}>
+                {analysis.project_name}
               </span>
-            )}
-            {analysis.file_count > 0 && (
+              <a
+                href={analysis.repo_url}
+                target="_blank"
+                rel="noreferrer"
+                title="Open on GitHub"
+                onClick={e => e.stopPropagation()}
+                style={{ width: 20, height: 20, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                         color: 'var(--text-muted)', borderRadius: 4, transition: 'var(--transition)' }}
+                onMouseEnter={e => { e.currentTarget.style.color = 'var(--accent)'; }}
+                onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-muted)'; }}
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6" />
+                  <polyline points="15 3 21 3 21 9" />
+                  <line x1="10" y1="14" x2="21" y2="3" />
+                </svg>
+              </a>
+              <StatusBadge status={analysis.status} />
+            </div>
+            <div style={{ display: 'flex', gap: 12, marginTop: 4, flexWrap: 'wrap' }}>
+              {m.primary_language && <Tag>{m.primary_language}</Tag>}
+              {m.stars != null && (
+                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                  ⭐ {formatNumber(m.stars)}
+                </span>
+              )}
+              {analysis.file_count > 0 && (
+                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                  📄 {analysis.file_count} files
+                </span>
+              )}
               <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                📄 {analysis.file_count} files
+                {timeAgo(analysis.created_at)}
               </span>
-            )}
-            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-              {timeAgo(analysis.created_at)}
-            </span>
+            </div>
           </div>
         </div>
 
         {/* Score rings */}
         {!isPending && !isFailed && (
-          <div style={{ display: 'flex', gap: 20, alignItems: 'center' }}>
+          <div className="card-scores" style={{ display: 'flex', gap: 20, alignItems: 'center' }}>
             <ScoreRing score={m.composite_score} size={56} label="Overall" />
             {m.quality?.overall_score  != null && <ScoreRing score={m.quality.overall_score}  size={48} label="Quality"  />}
             {m.security?.risk_score    != null && <ScoreRing score={m.security.risk_score}    size={48} label="Security" />}
@@ -360,7 +364,7 @@ export default function AnalysisCard({ analysis, onDelete, onRescanned, onFullDa
         )}
 
         {/* Actions */}
-        <div style={{ display: 'flex', gap: 6 }} onClick={e => e.stopPropagation()}>
+        <div className="card-actions" style={{ display: 'flex', gap: 6 }} onClick={e => e.stopPropagation()}>
           {!isPending && !isFailed && (
             <div style={{ position: 'relative' }}>
               <button

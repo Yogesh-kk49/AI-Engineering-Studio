@@ -219,27 +219,44 @@ textarea:focus-visible,
 /* ─── Responsive ─────────────────────────────────────────────────────────
    The app was built almost entirely with fixed-pixel inline styles and
    had zero @media breakpoints anywhere in the codebase, so it didn't
-   adapt to phone-width screens at all. These rules target the layout
-   patterns that recur across pages (sticky headers, two-column grids,
-   the analysis tab bar) via structural/attribute selectors so they apply
-   without having to rewrite every inline style into a class.
+   adapt to phone-width screens at all.
+
+   IMPORTANT: an inline `style` attribute always beats a normal stylesheet
+   rule, no matter how specific the selector is — only `!important` in a
+   stylesheet can override it. An earlier pass of these rules forgot that
+   for the horizontal-padding override below, so it silently did nothing
+   on any page (headers/mains kept their full desktop padding, which is
+   exactly what was squeezing the Analyze button and card rows off-screen
+   on phones). Every rule here that touches a property already set inline
+   uses `!important` for that reason.
    ────────────────────────────────────────────────────────────────────── */
 @media (max-width: 640px) {
   html { font-size: 14px; }
 
-  /* Any of this app's "maxWidth: 1200 / 720 / 900, margin: 0 auto" content
-     containers — give them breathing room on narrow screens instead of
-     the fixed horizontal padding meant for desktop. */
-  body [style*="max-width"] {
-    padding-left: 16px;
-    padding-right: 16px;
+  /* Every page's <header>/<main>/<footer> uses a fixed 32px (or more)
+     horizontal padding meant for desktop. Shrink it uniformly so content
+     (forms, cards, nav) actually has room on a phone screen. */
+  header, main, footer {
+    padding-left: 16px !important;
+    padding-right: 16px !important;
   }
 
-  /* Two-column grids (Overview tab's "Repository Info" / "Project
-     Features" side-by-side layout, etc.) collapse to one column instead
-     of squeezing two onto a phone width. */
+  /* Hero headings sized for desktop (36–44px) can force other elements
+     wide or wrap awkwardly on narrow screens. */
+  h1 { font-size: 26px !important; }
+
+  /* Two-column grids (Overview/Architecture/Updates tabs' side-by-side
+     panels, etc.) collapse to one column instead of squeezing two onto a
+     phone width. */
   body [style*="grid-template-columns: 1fr 1fr"] {
     grid-template-columns: 1fr !important;
+  }
+
+  /* Compare tab's "before | delta | after" 3-column diff rows collapse
+     to a single stacked column too. */
+  body [style*="grid-template-columns: 1fr 90px 1fr"] {
+    grid-template-columns: 1fr !important;
+    row-gap: 10px !important;
   }
 
   /* The sticky dashboard/nav header's title + actions row wraps instead
@@ -255,6 +272,44 @@ textarea:focus-visible,
   .tab-bar-scroll button {
     padding: 10px 12px !important;
     font-size: 12px !important;
+  }
+
+  /* ── Repository (Analyze) form ──────────────────────────────────────
+     Input + submit button sat in one non-wrapping flex row with a fixed
+     132px-min-width button — this is what was breaking/squeezing the
+     Analyze button off-screen on phones. Stack them instead. */
+  .repo-analyze-row {
+    flex-wrap: wrap !important;
+  }
+  .repo-analyze-row input {
+    flex: 1 1 100% !important;
+  }
+  .repo-analyze-row button[type="submit"] {
+    flex: 1 1 100% !important;
+    width: 100% !important;
+  }
+
+  /* ── Analysis card header ───────────────────────────────────────────
+     Icon+name, score rings, and the action-button cluster used to sit
+     in one non-wrapping flex row, which overflowed the card on phones.
+     Stack each group onto its own line instead. */
+  .card-header-row {
+    flex-wrap: wrap !important;
+    row-gap: 12px !important;
+    padding: 14px 16px !important;
+  }
+  .card-title-row {
+    flex: 1 1 100% !important;
+  }
+  .card-scores {
+    flex: 1 1 100% !important;
+    justify-content: flex-start !important;
+    gap: 14px !important;
+  }
+  .card-actions {
+    flex: 1 1 100% !important;
+    justify-content: flex-end !important;
+    flex-wrap: wrap !important;
   }
 }
 
