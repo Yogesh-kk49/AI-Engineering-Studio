@@ -41,6 +41,8 @@ services:
         value: https://ai-engineering-studio-frontend.onrender.com
       - key: CSRF_TRUSTED_ORIGINS
         value: https://ai-engineering-studio-frontend.onrender.com
+      - key: EMAIL_TIMEOUT
+        value: "10"
       # Set these in the Render dashboard (Secret) after the first deploy —
       # left blank here so they don't end up committed to the repo.
       - key: GITHUB_TOKEN

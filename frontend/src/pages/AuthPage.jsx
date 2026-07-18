@@ -160,7 +160,7 @@ export default function AuthPage() {
               Sign in to continue
             </h1>
             <p style={{ fontSize: 13, color: 'var(--text-muted)', textAlign: 'center', marginBottom: 24 }}>
-              We'll email you a one-time code — no password needed.
+              We'll email you a one-time code-no password needed.
             </p>
 
             <form onSubmit={sendCode}>
