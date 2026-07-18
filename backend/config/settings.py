@@ -25,6 +25,17 @@ GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # ──────────────────────────────────────────────────────────────────────────
+# Google Sign-In (free alternative to emailed OTP codes — no domain or
+# email provider needed at all). Get a Client ID at
+# console.cloud.google.com → APIs & Services → Credentials → Create
+# OAuth client ID → Web application. Add your frontend's exact origin
+# (e.g. https://ai-engineering-studio-frontend.onrender.com) under
+# "Authorized JavaScript origins". The frontend needs the SAME client ID
+# as VITE_GOOGLE_CLIENT_ID — see frontend/.env.example.
+# ──────────────────────────────────────────────────────────────────────────
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
+
+# ──────────────────────────────────────────────────────────────────────────
 # Email (OTP login codes are sent through this)
 # ──────────────────────────────────────────────────────────────────────────
 # Two ways to send real email, tried in this order:

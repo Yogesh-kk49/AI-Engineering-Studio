@@ -45,13 +45,11 @@ export function AuthProvider({ children }) {
     return () => { cancelled = true; };
   }, []);
 
-  const requestOtp = useCallback(async (targetEmail) => {
-    const res = await api.post('accounts/otp/request/', { email: targetEmail });
-    return res.data;
-  }, []);
-
-  const verifyOtp = useCallback(async (targetEmail, otp) => {
-    const res = await api.post('accounts/otp/verify/', { email: targetEmail, otp });
+  // `credential` is the signed ID token Google's Identity Services button
+  // hands back on successful sign-in — see AuthPage.jsx. The backend
+  // verifies it server-side before trusting anything in it.
+  const googleLogin = useCallback(async (credential) => {
+    const res = await api.post('accounts/google/', { credential });
     const { token: newToken, email: confirmedEmail } = res.data;
     localStorage.setItem(TOKEN_KEY, newToken);
     localStorage.setItem(EMAIL_KEY, confirmedEmail);
@@ -78,8 +76,7 @@ export function AuthProvider({ children }) {
     email,
     isAuthenticated: Boolean(token),
     checking,
-    requestOtp,
-    verifyOtp,
+    googleLogin,
     logout,
   };
 

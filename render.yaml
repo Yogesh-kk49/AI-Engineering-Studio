@@ -41,26 +41,17 @@ services:
         value: https://ai-engineering-studio-frontend.onrender.com
       - key: CSRF_TRUSTED_ORIGINS
         value: https://ai-engineering-studio-frontend.onrender.com
-      - key: EMAIL_TIMEOUT
-        value: "10"
-      # Set these in the Render dashboard (Secret) after the first deploy —
-      # left blank here so they don't end up committed to the repo.
+      # Set this in the Render dashboard (Secret) after the first deploy —
+      # left blank here so it doesn't end up committed to the repo.
+      # Get it at console.cloud.google.com → Credentials → OAuth client ID
+      # (Web application) → add this backend's frontend origin under
+      # "Authorized JavaScript origins". Must match VITE_GOOGLE_CLIENT_ID
+      # on the frontend service below.
+      - key: GOOGLE_CLIENT_ID
+        sync: false
       - key: GITHUB_TOKEN
         sync: false
       - key: GEMINI_API_KEY
-        sync: false
-      # Real email delivery for OTP login codes, sent via Resend's HTTP
-      # API (not SMTP) — Render's free tier blocks outbound SMTP ports
-      # entirely, so raw Gmail SMTP below can never connect from here.
-      # Get a free key at resend.com → API Keys. Leave unset and the
-      # backend falls back to printing the code to the service logs.
-      - key: RESEND_API_KEY
-        sync: false
-      # Optional Gmail SMTP fallback — only used if RESEND_API_KEY is
-      # unset, and won't work on Render's free tier (see note above).
-      - key: EMAIL_HOST_USER
-        sync: false
-      - key: EMAIL_HOST_PASSWORD
         sync: false
 
   # ── Frontend: React app (static site) ────────────────────────────────
@@ -73,6 +64,13 @@ services:
     envVars:
       - key: VITE_API_URL
         value: https://ai-engineering-studio-backend.onrender.com/api/
+      # Must match GOOGLE_CLIENT_ID on the backend service above. Set
+      # after the first deploy in the Render dashboard. Not actually
+      # secret (VITE_ vars are baked into the built JS bundle and
+      # visible to anyone anyway — normal for OAuth client IDs), but
+      # left as sync:false here since there's no real value to commit.
+      - key: VITE_GOOGLE_CLIENT_ID
+        sync: false
     routes:
       # Client-side routing (react-router) — send unmatched paths to
       # index.html instead of a static 404.

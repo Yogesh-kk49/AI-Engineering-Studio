@@ -7,6 +7,8 @@ from django.core.exceptions import ValidationError
 from django.core.mail import send_mail
 from django.core.validators import validate_email
 from django.utils import timezone
+from google.auth.transport import requests as google_requests
+from google.oauth2 import id_token as google_id_token
 from rest_framework import status
 from rest_framework.authtoken.models import Token
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -155,6 +157,80 @@ class RequestOTPView(APIView):
                 "server is in console-email fallback mode."
             )
         return Response(response_data, status=status.HTTP_200_OK)
+
+
+class GoogleLoginView(APIView):
+    """
+    POST /api/accounts/google/
+    Body: {"credential": "<Google ID token from Google Identity Services>"}
+
+    Alternative to the OTP flow that needs no outbound email at all —
+    added because Render's free tier blocks SMTP, and free HTTP email
+    providers (Resend, etc.) only send to arbitrary recipients once you
+    verify a domain you own. Google Sign-In sidesteps all of that: Google
+    itself verifies the person owns the email, and this view just checks
+    Google's signature on the token before trusting it.
+
+    The frontend loads Google's Identity Services script and renders the
+    official "Sign in with Google" button, which returns a signed ID
+    token (a JWT) — never a password or anything else. That token is
+    POSTed here as `credential`; we verify it server-side with Google's
+    own library (this never trusts the token at face value) and then
+    get-or-create a Django User exactly like VerifyOTPView does, so
+    everything downstream (RepositoryAnalysis.user, DRF TokenAuthentication,
+    etc.) works identically regardless of which login method was used.
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        credential = request.data.get("credential") or ""
+        if not credential:
+            return Response({"error": "credential is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        client_id = getattr(settings, "GOOGLE_CLIENT_ID", "")
+        if not client_id:
+            logger.error("google_login.misconfigured")
+            return Response(
+                {"error": "Google sign-in isn't configured on this server yet."},
+                status=status.HTTP_501_NOT_IMPLEMENTED,
+            )
+
+        try:
+            # This call itself verifies the token's signature against
+            # Google's public keys, its expiry, and that `aud` matches
+            # our client_id — it raises ValueError on any mismatch, so a
+            # forged or replayed token never reaches the code below.
+            idinfo = google_id_token.verify_oauth2_token(
+                credential, google_requests.Request(), client_id,
+            )
+        except ValueError:
+            logger.warning("google_login.invalid_token")
+            return Response({"error": "Invalid or expired Google credential."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not idinfo.get("email_verified", False):
+            return Response({"error": "Google account email isn't verified."}, status=status.HTTP_400_BAD_REQUEST)
+
+        email = idinfo["email"].strip().lower()
+
+        # username == email keeps this identical to the OTP flow, so a
+        # person who previously signed up via OTP and later uses Google
+        # with the same address lands on the same account instead of a
+        # duplicate one.
+        user, created = User.objects.get_or_create(
+            username=email, defaults={"email": email, "is_active": True},
+        )
+        if not user.email:
+            user.email = email
+            user.save(update_fields=["email"])
+
+        token, _ = Token.objects.get_or_create(user=user)
+        logger.info("google_login.success", extra={"email": email, "new_user": created})
+        return Response({
+            "success": True,
+            "token": token.key,
+            "email": email,
+            "is_new_user": created,
+        })
 
 
 class VerifyOTPView(APIView):
