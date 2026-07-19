@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Signing in…</title>
+  </head>
+  <body style="margin:0;display:flex;align-items:center;justify-content:center;height:100vh;font-family:system-ui,-apple-system,sans-serif;background:#0f1117;color:#9ca3af;">
+    <p>You can close this window.</p>
+    <script>
+      (function () {
+        // Google redirects back here with the result in the URL *fragment*
+        // (after #), not a query string, since this is the implicit
+        // response_type=id_token flow — nothing is ever sent to a server.
+        var hash = window.location.hash.startsWith('#')
+          ? window.location.hash.slice(1)
+          : window.location.hash;
+        var params = new URLSearchParams(hash);
+
+        var payload = {
+          source: 'google-oauth-callback',
+          idToken: params.get('id_token') || null,
+          error: params.get('error') || null,
+          state: params.get('state') || null,
+        };
+
+        if (window.opener) {
+          // Restrict to our own origin — the opener is the same site that
+          // opened this popup, so this never leaks the token elsewhere.
+          window.opener.postMessage(payload, window.location.origin);
+        }
+        window.close();
+      })();
+    </script>
+  </body>
+</html>

@@ -1,31 +1,42 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import ThemeToggle from '../components/ui/ThemeToggle';
 
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
 
-// Loads Google's Identity Services script once and resolves when it's
-// ready to use. Safe to call multiple times — later calls reuse the
-// same in-flight/completed load instead of injecting duplicate <script>
-// tags.
-let googleScriptPromise = null;
-function loadGoogleScript() {
-  if (googleScriptPromise) return googleScriptPromise;
-  googleScriptPromise = new Promise((resolve, reject) => {
-    if (window.google?.accounts?.id) {
-      resolve();
-      return;
-    }
-    const script = document.createElement('script');
-    script.src = 'https://accounts.google.com/gsi/client';
-    script.async = true;
-    script.defer = true;
-    script.onload = resolve;
-    script.onerror = reject;
-    document.head.appendChild(script);
+// Same-origin static page (frontend/public/google-callback.html) that
+// Google redirects the popup back to once the person picks an account.
+// Must be added as an "Authorized redirect URI" for this OAuth client in
+// Google Cloud Console → APIs & Services → Credentials, e.g.
+//   https://your-frontend-domain.onrender.com/google-callback.html
+//   http://localhost:5173/google-callback.html   (for local dev)
+const REDIRECT_URI = `${window.location.origin}/google-callback.html`;
+
+function randomToken() {
+  const bytes = new Uint8Array(16);
+  window.crypto.getRandomValues(bytes);
+  return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+}
+
+// Builds the classic Google OAuth "choose an account" page URL (the
+// implicit response_type=id_token flow — no client secret involved,
+// nothing ever touches a server on Google's side). prompt=select_account
+// forces the account chooser to show even when there's only one signed-in
+// account, so the person always gets an explicit, deliberate click here —
+// this is the step that replaces Chrome's compact FedCM button chip,
+// which couldn't be customized or skipped from the page's own code.
+function buildGoogleAuthUrl(nonce, state) {
+  const params = new URLSearchParams({
+    client_id: GOOGLE_CLIENT_ID,
+    redirect_uri: REDIRECT_URI,
+    response_type: 'id_token',
+    scope: 'openid email profile',
+    nonce,
+    state,
+    prompt: 'select_account',
   });
-  return googleScriptPromise;
+  return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
 }
 
 // Google's credential is a signed JWT — the backend verifies the
@@ -45,52 +56,115 @@ function decodeJwtPayload(jwt) {
   }
 }
 
-function GoogleSignInButton({ onCredential, onError }) {
-  const buttonRef = useRef(null);
+// Opens Google's account chooser in a popup and resolves with the raw
+// id_token once the person picks an account there. Rejects if they close
+// the popup first, if popups are blocked, or if Google reports an error.
+function signInWithGooglePopup() {
+  return new Promise((resolve, reject) => {
+    if (!GOOGLE_CLIENT_ID) { reject(new Error('missing_client_id')); return; }
 
-  useEffect(() => {
-    if (!GOOGLE_CLIENT_ID) return;
-    let cancelled = false;
+    const nonce = randomToken();
+    const state = randomToken();
+    const url = buildGoogleAuthUrl(nonce, state);
 
-    loadGoogleScript()
-      .then(() => {
-        if (cancelled || !buttonRef.current) return;
-        window.google.accounts.id.initialize({
-          client_id: GOOGLE_CLIENT_ID,
-          callback: (response) => onCredential(response.credential),
-          // Without this, Google can silently re-sign-in a returning user
-          // the instant the button mounts (no click, no account picker) if
-          // the browser already has one Google session active for this
-          // site — that's what looked like "it just picks an account for
-          // me". Forcing this off means nothing happens until the person
-          // actually clicks the button below.
-          auto_select: false,
-          cancel_on_tap_outside: true,
-          // FedCM-enabled browsers rewrite the button itself into a
-          // personalized "Sign in as {cached name}" chip once there's an
-          // active Google session for this site — that's the screenshot:
-          // the button skipped the neutral state and jumped straight to a
-          // specific account with only a small chevron to switch. Turning
-          // FedCM off for the button keeps it on the classic, always-
-          // neutral "Sign in with Google" rendering, and clicking it opens
-          // Google's normal full account chooser instead of pre-filling one.
-          use_fedcm_for_button: false,
-        });
-        window.google.accounts.id.renderButton(buttonRef.current, {
-          theme: 'outline',
-          size: 'large',
-          width: 320,
-          text: 'signin_with',
-          logo_alignment: 'left',
-        });
-      })
-      .catch(() => onError?.('Could not load Google Sign-In. Please refresh and try again.'));
+    const width = 460, height = 600;
+    const left = window.screenX + Math.max(0, (window.outerWidth - width) / 2);
+    const top = window.screenY + Math.max(0, (window.outerHeight - height) / 2);
+    const popup = window.open(
+      url, 'google-oauth-signin',
+      `width=${width},height=${height},left=${left},top=${top}`
+    );
 
-    return () => { cancelled = true; };
-  }, [onCredential, onError]);
+    if (!popup) {
+      reject(new Error('popup_blocked'));
+      return;
+    }
 
-  return <div ref={buttonRef} style={{ display: 'flex', justifyContent: 'center' }} />;
+    let settled = false;
+    const cleanup = () => {
+      settled = true;
+      window.removeEventListener('message', onMessage);
+      clearInterval(closeCheck);
+    };
+
+    const onMessage = (event) => {
+      if (event.origin !== window.location.origin) return;
+      if (event.data?.source !== 'google-oauth-callback') return;
+      cleanup();
+
+      if (event.data.error) {
+        reject(new Error(event.data.error));
+        return;
+      }
+      if (!event.data.idToken || event.data.state !== state) {
+        reject(new Error('invalid_response'));
+        return;
+      }
+      const payload = decodeJwtPayload(event.data.idToken);
+      if (!payload || payload.nonce !== nonce) {
+        reject(new Error('nonce_mismatch'));
+        return;
+      }
+      resolve(event.data.idToken);
+    };
+    window.addEventListener('message', onMessage);
+
+    // The popup gives us no event when the person just closes it without
+    // finishing — poll for that so the "Signing in…" state doesn't hang
+    // forever.
+    const closeCheck = setInterval(() => {
+      if (popup.closed && !settled) {
+        cleanup();
+        reject(new Error('popup_closed'));
+      }
+    }, 400);
+  });
 }
+
+function GoogleSignInButton({ onCredential, onError, disabled }) {
+  const [opening, setOpening] = useState(false);
+
+  const handleClick = async () => {
+    if (!GOOGLE_CLIENT_ID) { onError?.('Google sign-in isn\u2019t configured yet.'); return; }
+    setOpening(true);
+    try {
+      const idToken = await signInWithGooglePopup();
+      onCredential(idToken);
+    } catch (err) {
+      if (err.message === 'popup_blocked') {
+        onError?.('Your browser blocked the sign-in popup. Please allow popups for this site and try again.');
+      } else if (err.message !== 'popup_closed') {
+        onError?.('Google sign-in failed. Please try again.');
+      }
+    } finally {
+      setOpening(false);
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={handleClick}
+      disabled={disabled || opening}
+      style={{
+        width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center',
+        gap: 10, padding: '11px 16px', borderRadius: 'var(--radius)',
+        border: '1px solid var(--border)', background: 'var(--bg-input)',
+        color: 'var(--text-strong)', fontSize: 14, fontWeight: 600,
+        cursor: disabled || opening ? 'default' : 'pointer', opacity: opening ? 0.7 : 1,
+      }}
+    >
+      <svg width="18" height="18" viewBox="0 0 48 48" style={{ flexShrink: 0 }}>
+        <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+        <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.9-2.26 5.36-4.78 7.02l7.73 6c4.51-4.18 7.09-10.36 7.09-17.49z"/>
+        <path fill="#FBBC05" d="M10.53 28.59a14.5 14.5 0 010-9.18l-7.98-6.19a24 24 0 000 21.56l7.98-6.19z"/>
+        <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.9l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+      </svg>
+      {opening ? 'Waiting for Google…' : 'Sign in with Google'}
+    </button>
+  );
+}
+
 
 function Logo() {
   return (
@@ -146,11 +220,11 @@ export default function AuthPage() {
 
   // Lets the user back out of the confirmation screen and pick a
   // different Google account instead of being stuck with the one they
-  // first selected.
+  // first selected. Clicking "Sign in with Google" again reopens the
+  // popup with prompt=select_account, so Google shows the chooser again.
   const handleUseDifferentAccount = () => {
     setPendingAccount(null);
     setError('');
-    window.google?.accounts?.id?.disableAutoSelect?.();
   };
 
   return (

@@ -296,8 +296,8 @@ export default function Dashboard() {
             <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 10 }}>
               Works with any public GitHub repository.{' '}
               {scanMode === 'deep'
-                ? 'Deep Scan takes 30–90+ seconds depending on repo size.'
-                : 'Basic Scan takes 1–5 seconds — no cloning required.'}
+                ? 'Deep Scan takes 30-90+ seconds depending on repo size.'
+                : 'Basic Scan takes 1-5 seconds-no cloning required.'}
             </p>
           </div>
         </div>
