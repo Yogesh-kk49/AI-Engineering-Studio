@@ -133,43 +133,57 @@ export default function HistoryPage() {
         position: 'sticky', top: 0, zIndex: 100,
         boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
       }}>
-        <div style={{ maxWidth: 1200, margin: '0 auto', display: 'flex',
-          alignItems: 'center', height: 60, gap: 16, flexWrap: 'wrap' }}>
+        <div className="history-header-inner" style={{ maxWidth: 1200, margin: '0 auto', display: 'flex',
+          alignItems: 'center', justifyContent: 'space-between', minHeight: 60, padding: '10px 0',
+          gap: 16, flexWrap: 'wrap' }}>
 
-          <button
-            onClick={() => navigate('/dashboard')}
-            aria-label="Back to dashboard"
-            style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'none',
-              border: 'none', color: 'var(--text-muted)', fontSize: 13, fontWeight: 600,
-              cursor: 'pointer', padding: '6px 8px', borderRadius: 'var(--radius)' }}
-            onMouseEnter={e => { e.currentTarget.style.color = 'var(--text-strong)'; }}
-            onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-muted)'; }}
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <line x1="19" y1="12" x2="5" y2="12"/>
-              <polyline points="12 19 5 12 12 5"/>
-            </svg>
-            Dashboard
-          </button>
+          {/* Left group: back button + title + count. Kept together as one
+              flex item so it can never be split apart by wrapping. */}
+          <div className="history-header-left" style={{ display: 'flex', alignItems: 'center',
+            gap: 16, flexWrap: 'wrap', minWidth: 0 }}>
+            <button
+              onClick={() => navigate('/dashboard')}
+              aria-label="Back to dashboard"
+              style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'none',
+                border: 'none', color: 'var(--text-muted)', fontSize: 13, fontWeight: 600,
+                cursor: 'pointer', padding: '6px 8px', borderRadius: 'var(--radius)', flexShrink: 0 }}
+              onMouseEnter={e => { e.currentTarget.style.color = 'var(--text-strong)'; }}
+              onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-muted)'; }}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <line x1="19" y1="12" x2="5" y2="12"/>
+                <polyline points="12 19 5 12 12 5"/>
+              </svg>
+              Dashboard
+            </button>
 
-          <h1 style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-strong)', margin: 0 }}>
-            History
-          </h1>
-          {count > 0 && (
-            <span style={{ fontSize: 12, color: 'var(--text-muted)',
-              background: 'var(--bg-card-hover)', border: '1px solid var(--border)',
-              borderRadius: 20, padding: '3px 10px' }}>
-              {count} scan{count === 1 ? '' : 's'}
-            </span>
-          )}
+            <h1 style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-strong)', margin: 0,
+              flexShrink: 0 }}>
+              History
+            </h1>
+            {count > 0 && (
+              <span style={{ fontSize: 12, color: 'var(--text-muted)',
+                background: 'var(--bg-card-hover)', border: '1px solid var(--border)',
+                borderRadius: 20, padding: '3px 10px', flexShrink: 0 }}>
+                {count} scan{count === 1 ? '' : 's'}
+              </span>
+            )}
+          </div>
 
-          <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 12 }}>
+          {/* Right group: clear / email / theme toggle. Grouped as one flex
+              item (instead of three separate items with marginLeft: auto)
+              so that when it doesn't fit beside the left group, it wraps
+              cleanly onto its own line below — instead of its pieces
+              breaking apart and landing above the title, which is what was
+              happening before. */}
+          <div className="history-header-right" style={{ display: 'flex', alignItems: 'center',
+            gap: 12, flexWrap: 'wrap' }}>
             {analyses.length > 0 && (
               <button
                 onClick={() => setClearConfirmOpen(true)}
                 style={{ fontSize: 12, fontWeight: 600, color: 'var(--grade-f)',
                   background: 'transparent', border: '1px solid rgba(239,68,68,0.3)',
-                  borderRadius: 8, padding: '6px 12px', cursor: 'pointer' }}
+                  borderRadius: 8, padding: '6px 12px', cursor: 'pointer', flexShrink: 0 }}
               >
                 Clear history
               </button>
@@ -179,7 +193,7 @@ export default function HistoryPage() {
               <span style={{ fontSize: 12, color: 'var(--text-muted)',
                 background: 'var(--bg-card-hover)', border: '1px solid var(--border)',
                 padding: '5px 12px', borderRadius: 20, display: 'flex',
-                alignItems: 'center', gap: 6, maxWidth: 200, overflow: 'hidden' }}>
+                alignItems: 'center', gap: 6, maxWidth: 200, overflow: 'hidden', flexShrink: 0 }}>
                 <span style={{ width: 6, height: 6, borderRadius: '50%',
                   background: 'var(--status-done)', flexShrink: 0 }} />
                 <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>

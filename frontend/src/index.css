@@ -281,7 +281,7 @@ textarea:focus-visible,
   .repo-analyze-row {
     flex-wrap: wrap !important;
   }
-  .repo-analyze-row input {
+  .repo-analyze-row .repo-input-wrap {
     flex: 1 1 100% !important;
   }
   .repo-analyze-row button[type="submit"] {
